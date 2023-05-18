@@ -17,7 +17,7 @@ import (
 
 func TestShowStepRunnner(t *testing.T) {
 	logger := logging.NewNoopLogger(t)
-	path, _ := os.MkdirTemp("", "")
+	path := t.TempDir()
 	resultPath := filepath.Join(path, "test-default.json")
 	envs := map[string]string{"key": "val"}
 	tfVersion, _ := version.NewVersion("0.12")
@@ -31,9 +31,9 @@ func TestShowStepRunnner(t *testing.T) {
 
 	mockExecutor := mocks.NewMockClient()
 
-	subject := ShowStepRunner{
-		TerraformExecutor: mockExecutor,
-		DefaultTFVersion:  tfVersion,
+	subject := showStepRunner{
+		terraformExecutor: mockExecutor,
+		defaultTFVersion:  tfVersion,
 	}
 
 	t.Run("success", func(t *testing.T) {

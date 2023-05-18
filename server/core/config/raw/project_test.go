@@ -21,19 +21,23 @@ func TestProject_UnmarshalYAML(t *testing.T) {
 			description: "omit unset fields",
 			input:       "",
 			exp: raw.Project{
-				Dir:               nil,
-				Workspace:         nil,
-				Workflow:          nil,
-				TerraformVersion:  nil,
-				Autoplan:          nil,
-				ApplyRequirements: nil,
-				Name:              nil,
+				Dir:                nil,
+				Workspace:          nil,
+				Workflow:           nil,
+				TerraformVersion:   nil,
+				Autoplan:           nil,
+				PlanRequirements:   nil,
+				ApplyRequirements:  nil,
+				ImportRequirements: nil,
+				Name:               nil,
+				Branch:             nil,
 			},
 		},
 		{
 			description: "all fields set including mergeable apply requirement",
 			input: `
 name: myname
+branch: mybranch
 dir: mydir
 workspace: workspace
 workflow: workflow
@@ -41,11 +45,16 @@ terraform_version: v0.11.0
 autoplan:
   when_modified: []
   enabled: false
+plan_requirements:
+- mergeable
 apply_requirements:
+- mergeable
+import_requirements:
 - mergeable
 execution_order_group: 10`,
 			exp: raw.Project{
 				Name:             String("myname"),
+				Branch:           String("mybranch"),
 				Dir:              String("mydir"),
 				Workspace:        String("workspace"),
 				Workflow:         String("workflow"),
@@ -54,7 +63,9 @@ execution_order_group: 10`,
 					WhenModified: []string{},
 					Enabled:      Bool(false),
 				},
+				PlanRequirements:    []string{"mergeable"},
 				ApplyRequirements:   []string{"mergeable"},
+				ImportRequirements:  []string{"mergeable"},
 				ExecutionOrderGroup: Int(10),
 			},
 		},
@@ -96,6 +107,62 @@ func TestProject_Validate(t *testing.T) {
 				Dir: String("../mydir"),
 			},
 			expErr: "dir: cannot contain '..'.",
+		},
+		{
+			description: "not a regexp for branch",
+			input: raw.Project{
+				Branch: String("text"),
+				Dir:    String("."),
+			},
+			expErr: "branch: regex must begin and end with a slash '/'.",
+		},
+		{
+			description: "invalid regexp for branch",
+			input: raw.Project{
+				Branch: String("/(text/"),
+				Dir:    String("."),
+			},
+			expErr: "branch: parsing: /(text/: error parsing regexp: missing closing ): `(text`.",
+		},
+		{
+			description: "plan reqs with unsupported",
+			input: raw.Project{
+				Dir:              String("."),
+				PlanRequirements: []string{"unsupported"},
+			},
+			expErr: "plan_requirements: \"unsupported\" is not a valid plan_requirement, only \"approved\", \"mergeable\" and \"undiverged\" are supported.",
+		},
+		{
+			description: "plan reqs with undiverged, mergeable and approved requirements",
+			input: raw.Project{
+				Dir:              String("."),
+				PlanRequirements: []string{"undiverged", "mergeable", "approved"},
+			},
+			expErr: "",
+		},
+		{
+			description: "plan reqs with approved requirement",
+			input: raw.Project{
+				Dir:              String("."),
+				PlanRequirements: []string{"approved"},
+			},
+			expErr: "",
+		},
+		{
+			description: "plan reqs with mergeable requirement",
+			input: raw.Project{
+				Dir:              String("."),
+				PlanRequirements: []string{"mergeable"},
+			},
+			expErr: "",
+		},
+		{
+			description: "plan reqs with mergeable and approved requirements",
+			input: raw.Project{
+				Dir:              String("."),
+				PlanRequirements: []string{"mergeable", "approved"},
+			},
+			expErr: "",
 		},
 		{
 			description: "apply reqs with unsupported",
@@ -158,6 +225,22 @@ func TestProject_Validate(t *testing.T) {
 			input: raw.Project{
 				Dir:               String("."),
 				ApplyRequirements: []string{"undiverged", "mergeable", "approved"},
+			},
+			expErr: "",
+		},
+		{
+			description: "import reqs with unsupported",
+			input: raw.Project{
+				Dir:                String("."),
+				ImportRequirements: []string{"unsupported"},
+			},
+			expErr: "import_requirements: \"unsupported\" is not a valid import_requirement, only \"approved\", \"mergeable\" and \"undiverged\" are supported.",
+		},
+		{
+			description: "import reqs with undiverged, mergeable and approved requirements",
+			input: raw.Project{
+				Dir:                String("."),
+				ImportRequirements: []string{"undiverged", "mergeable", "approved"},
 			},
 			expErr: "",
 		},
@@ -261,6 +344,7 @@ func TestProject_ToValid(t *testing.T) {
 			},
 			exp: valid.Project{
 				Dir:              ".",
+				BranchRegex:      nil,
 				Workspace:        "default",
 				WorkflowName:     nil,
 				TerraformVersion: nil,

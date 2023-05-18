@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/go-github/v31/github"
+	"github.com/google/go-github/v52/github"
 	"github.com/mcdafydd/go-azuredevops/azuredevops"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/pkg/errors"
@@ -43,16 +43,21 @@ const bitbucketCloudRequestIDHeader = "X-Request-UUID"
 const bitbucketServerRequestIDHeader = "X-Request-ID"
 const bitbucketServerSignatureHeader = "X-Hub-Signature"
 
+// The URL used for Azure DevOps test webhooks
+const azuredevopsTestURL = "https://fabrikam.visualstudio.com/DefaultCollection/_apis/git/repositories/4bc14d40-c903-45e2-872e-0462c7748079"
+
 // VCSEventsController handles all webhook requests which signify 'events' in the
 // VCS host, ex. GitHub.
 type VCSEventsController struct {
-	CommandRunner events.CommandRunner
-	PullCleaner   events.PullCleaner
-	Logger        logging.SimpleLogging
-	Scope         tally.Scope
-	Parser        events.EventParsing
-	CommentParser events.CommentParsing
-	ApplyDisabled bool
+	CommandRunner  events.CommandRunner
+	PullCleaner    events.PullCleaner
+	Logger         logging.SimpleLogging
+	Scope          tally.Scope
+	Parser         events.EventParsing
+	CommentParser  events.CommentParsing
+	ApplyDisabled  bool
+	EmojiReaction  string
+	ExecutableName string
 	// GithubWebhookSecret is the secret added to this webhook via the GitHub
 	// UI that identifies this call as coming from GitHub. If empty, no
 	// request validation is done.
@@ -139,8 +144,9 @@ func (e *VCSEventsController) Post(w http.ResponseWriter, r *http.Request) {
 }
 
 type HTTPError struct {
-	err  error
-	code int
+	err        error
+	code       int
+	isSilenced bool
 }
 
 type HTTPResponse struct {
@@ -158,7 +164,7 @@ func (e *VCSEventsController) handleGithubPost(w http.ResponseWriter, r *http.Re
 
 	githubReqID := "X-Github-Delivery=" + r.Header.Get("X-Github-Delivery")
 	logger := e.Logger.With("gh-request-id", githubReqID)
-	scope := e.Scope.SubScope("github.event")
+	scope := e.Scope.SubScope("github_event")
 
 	logger.Debug("request valid")
 
@@ -169,10 +175,12 @@ func (e *VCSEventsController) handleGithubPost(w http.ResponseWriter, r *http.Re
 	switch event := event.(type) {
 	case *github.IssueCommentEvent:
 		resp = e.HandleGithubCommentEvent(event, githubReqID, logger)
-		scope = scope.SubScope(fmt.Sprintf("comment.%s", *event.Action))
+		scope = scope.SubScope(fmt.Sprintf("comment_%s", *event.Action))
+		scope = vcs.SetGitScopeTags(scope, event.GetRepo().GetFullName(), event.GetIssue().GetNumber())
 	case *github.PullRequestEvent:
 		resp = e.HandleGithubPullRequestEvent(logger, event, githubReqID)
-		scope = scope.SubScope(fmt.Sprintf("pr.%s", *event.Action))
+		scope = scope.SubScope(fmt.Sprintf("pr_%s", *event.Action))
+		scope = vcs.SetGitScopeTags(scope, event.GetRepo().GetFullName(), event.GetNumber())
 	default:
 		resp = HTTPResponse{
 			body: fmt.Sprintf("Ignoring unsupported event %s", githubReqID),
@@ -180,7 +188,9 @@ func (e *VCSEventsController) handleGithubPost(w http.ResponseWriter, r *http.Re
 	}
 
 	if resp.err.code != 0 {
-		logger.Err("error handling gh post code: %d err: %s", resp.err.code, resp.err.err.Error())
+		if !resp.err.isSilenced {
+			logger.Err("error handling gh post code: %d err: %s", resp.err.code, resp.err.err.Error())
+		}
 		scope.Counter(fmt.Sprintf("error_%d", resp.err.code)).Inc(1)
 		w.WriteHeader(resp.err.code)
 		fmt.Fprintln(w, resp.err.err.Error())
@@ -294,15 +304,18 @@ func (e *VCSEventsController) HandleGithubCommentEvent(event *github.IssueCommen
 		return HTTPResponse{
 			body: wrapped.Error(),
 			err: HTTPError{
-				code: http.StatusBadRequest,
-				err:  wrapped,
+				code:       http.StatusBadRequest,
+				err:        wrapped,
+				isSilenced: false,
 			},
 		}
 	}
 
+	comment := event.GetComment()
+
 	// We pass in nil for maybeHeadRepo because the head repo data isn't
 	// available in the GithubIssueComment event.
-	return e.handleCommentEvent(logger, baseRepo, nil, nil, user, pullNum, event.Comment.GetBody(), models.Github)
+	return e.handleCommentEvent(logger, baseRepo, nil, nil, user, pullNum, comment.GetBody(), comment.GetID(), models.Github)
 }
 
 // HandleBitbucketCloudCommentEvent handles comment events from Bitbucket.
@@ -312,7 +325,7 @@ func (e *VCSEventsController) HandleBitbucketCloudCommentEvent(w http.ResponseWr
 		e.respond(w, logging.Error, http.StatusBadRequest, "Error parsing pull data: %s %s=%s", err, bitbucketCloudRequestIDHeader, reqID)
 		return
 	}
-	resp := e.handleCommentEvent(e.Logger, baseRepo, &headRepo, &pull, user, pull.Num, comment, models.BitbucketCloud)
+	resp := e.handleCommentEvent(e.Logger, baseRepo, &headRepo, &pull, user, pull.Num, comment, -1, models.BitbucketCloud)
 
 	//TODO: move this to the outer most function similar to github
 	lvl := logging.Debug
@@ -333,7 +346,7 @@ func (e *VCSEventsController) HandleBitbucketServerCommentEvent(w http.ResponseW
 		e.respond(w, logging.Error, http.StatusBadRequest, "Error parsing pull data: %s %s=%s", err, bitbucketCloudRequestIDHeader, reqID)
 		return
 	}
-	resp := e.handleCommentEvent(e.Logger, baseRepo, &headRepo, &pull, user, pull.Num, comment, models.BitbucketCloud)
+	resp := e.handleCommentEvent(e.Logger, baseRepo, &headRepo, &pull, user, pull.Num, comment, -1, models.BitbucketCloud)
 
 	//TODO: move this to the outer most function similar to github
 	lvl := logging.Debug
@@ -401,8 +414,9 @@ func (e *VCSEventsController) HandleGithubPullRequestEvent(logger logging.Simple
 		return HTTPResponse{
 			body: wrapped.Error(),
 			err: HTTPError{
-				code: http.StatusBadRequest,
-				err:  wrapped,
+				code:       http.StatusBadRequest,
+				err:        wrapped,
+				isSilenced: false,
 			},
 		}
 	}
@@ -425,8 +439,9 @@ func (e *VCSEventsController) handlePullRequestEvent(logger logging.SimpleLoggin
 		return HTTPResponse{
 			body: err.Error(),
 			err: HTTPError{
-				code: http.StatusForbidden,
-				err:  err,
+				code:       http.StatusForbidden,
+				err:        err,
+				isSilenced: e.SilenceAllowlistErrors,
 			},
 		}
 	}
@@ -453,8 +468,9 @@ func (e *VCSEventsController) handlePullRequestEvent(logger logging.SimpleLoggin
 			return HTTPResponse{
 				body: err.Error(),
 				err: HTTPError{
-					code: http.StatusForbidden,
-					err:  err,
+					code:       http.StatusForbidden,
+					err:        err,
+					isSilenced: false,
 				},
 			}
 		}
@@ -504,7 +520,7 @@ func (e *VCSEventsController) HandleGitlabCommentEvent(w http.ResponseWriter, ev
 		e.respond(w, logging.Error, http.StatusBadRequest, "Error parsing webhook: %s", err)
 		return
 	}
-	resp := e.handleCommentEvent(e.Logger, baseRepo, &headRepo, nil, user, event.MergeRequest.IID, event.ObjectAttributes.Note, models.Gitlab)
+	resp := e.handleCommentEvent(e.Logger, baseRepo, &headRepo, nil, user, event.MergeRequest.IID, event.ObjectAttributes.Note, -1, models.Gitlab)
 
 	//TODO: move this to the outer most function similar to github
 	lvl := logging.Debug
@@ -518,7 +534,7 @@ func (e *VCSEventsController) HandleGitlabCommentEvent(w http.ResponseWriter, ev
 	e.respond(w, lvl, code, msg)
 }
 
-func (e *VCSEventsController) handleCommentEvent(logger logging.SimpleLogging, baseRepo models.Repo, maybeHeadRepo *models.Repo, maybePull *models.PullRequest, user models.User, pullNum int, comment string, vcsHost models.VCSHostType) HTTPResponse {
+func (e *VCSEventsController) handleCommentEvent(logger logging.SimpleLogging, baseRepo models.Repo, maybeHeadRepo *models.Repo, maybePull *models.PullRequest, user models.User, pullNum int, comment string, commentID int64, vcsHost models.VCSHostType) HTTPResponse {
 	parseResult := e.CommentParser.Parse(comment, vcsHost)
 	if parseResult.Ignore {
 		truncated := comment
@@ -538,12 +554,22 @@ func (e *VCSEventsController) handleCommentEvent(logger logging.SimpleLogging, b
 		e.commentNotAllowlisted(baseRepo, pullNum)
 
 		err := errors.New("Repo not allowlisted")
+
 		return HTTPResponse{
 			body: err.Error(),
 			err: HTTPError{
-				err:  err,
-				code: http.StatusForbidden,
+				err:        err,
+				code:       http.StatusForbidden,
+				isSilenced: e.SilenceAllowlistErrors,
 			},
+		}
+	}
+
+	// It's a comment we're gonna react to, so add a reaction.
+	if e.EmojiReaction != "" {
+		err := e.VCSClient.ReactToComment(baseRepo, commentID, e.EmojiReaction)
+		if err != nil {
+			logger.Warn("Failed to react to comment: %s", err)
 		}
 	}
 
@@ -615,10 +641,21 @@ func (e *VCSEventsController) HandleAzureDevopsPullRequestCommentedEvent(w http.
 		e.respond(w, logging.Debug, http.StatusOK, "Ignoring comment event since no comment is linked to payload; %s", azuredevopsReqID)
 		return
 	}
+
+	if resource.Comment.GetIsDeleted() {
+		e.respond(w, logging.Debug, http.StatusOK, "Ignoring comment event since it is linked to deleting a pull request comment; %s", azuredevopsReqID)
+		return
+	}
+
 	strippedComment := bluemonday.StrictPolicy().SanitizeBytes([]byte(*resource.Comment.Content))
 
 	if resource.PullRequest == nil {
 		e.respond(w, logging.Debug, http.StatusOK, "Ignoring comment event since no pull request is linked to payload; %s", azuredevopsReqID)
+		return
+	}
+
+	if isAzureDevOpsTestRepoURL(resource.PullRequest.GetRepository()) {
+		e.respond(w, logging.Debug, http.StatusOK, "Ignoring Azure DevOps Test Event with Repo URL: %v %s", resource.PullRequest.Repository.URL, azuredevopsReqID)
 		return
 	}
 
@@ -629,7 +666,7 @@ func (e *VCSEventsController) HandleAzureDevopsPullRequestCommentedEvent(w http.
 		e.respond(w, logging.Error, http.StatusBadRequest, "Error parsing pull request repository field: %s; %s", err, azuredevopsReqID)
 		return
 	}
-	resp := e.handleCommentEvent(e.Logger, baseRepo, nil, nil, user, resource.PullRequest.GetPullRequestID(), string(strippedComment), models.AzureDevops)
+	resp := e.handleCommentEvent(e.Logger, baseRepo, nil, nil, user, resource.PullRequest.GetPullRequestID(), string(strippedComment), -1, models.AzureDevops)
 
 	//TODO: move this to the outer most function similar to github
 	lvl := logging.Debug
@@ -662,6 +699,16 @@ func (e *VCSEventsController) HandleAzureDevopsPullRequestEvent(w http.ResponseW
 			e.respond(w, logging.Debug, http.StatusOK, "%s: %s", msg, azuredevopsReqID)
 			return
 		}
+	}
+
+	resource, ok := event.Resource.(*azuredevops.GitPullRequest)
+	if !ok || event.PayloadType != azuredevops.PullRequestEvent {
+		e.respond(w, logging.Error, http.StatusBadRequest, "Event.Resource is nil or received bad event type %v; %s", event.Resource, azuredevopsReqID)
+		return
+	}
+	if isAzureDevOpsTestRepoURL(resource.GetRepository()) {
+		e.respond(w, logging.Debug, http.StatusOK, "Ignoring Azure DevOps Test Event with Repo URL: %v %s", resource.Repository.URL, azuredevopsReqID)
+		return
 	}
 
 	pull, pullEventType, baseRepo, headRepo, user, err := e.Parser.ParseAzureDevopsPullEvent(*event)
@@ -712,4 +759,11 @@ func (e *VCSEventsController) commentNotAllowlisted(baseRepo models.Repo, pullNu
 	if err := e.VCSClient.CreateComment(baseRepo, pullNum, errMsg, ""); err != nil {
 		e.Logger.Err("unable to comment on pull request: %s", err)
 	}
+}
+
+func isAzureDevOpsTestRepoURL(repository *azuredevops.GitRepository) bool {
+	if repository == nil {
+		return false
+	}
+	return repository.GetURL() == azuredevopsTestURL
 }

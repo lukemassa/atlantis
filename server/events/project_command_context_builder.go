@@ -2,12 +2,10 @@ package events
 
 import (
 	"path/filepath"
-	"regexp"
 
 	"github.com/google/uuid"
-	"github.com/hashicorp/go-version"
-	"github.com/hashicorp/terraform-config-inspect/tfconfig"
 	"github.com/runatlantis/atlantis/server/core/config/valid"
+	"github.com/runatlantis/atlantis/server/core/terraform"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/uber-go/tally"
@@ -36,10 +34,11 @@ type ProjectCommandContextBuilder interface {
 	BuildProjectContext(
 		ctx *command.Context,
 		cmdName command.Name,
+		subCmdName string,
 		prjCfg valid.MergedProjectCfg,
 		commentFlags []string,
 		repoDir string,
-		automerge, deleteSourceBranchOnMerge, parallelApply, parallelPlan, verbose bool,
+		automerge, parallelApply, parallelPlan, verbose, abortOnExcecutionOrderFail bool, terraformClient terraform.Client,
 	) []command.ProjectContext
 }
 
@@ -55,15 +54,17 @@ type CommandScopedStatsProjectCommandContextBuilder struct {
 func (cb *CommandScopedStatsProjectCommandContextBuilder) BuildProjectContext(
 	ctx *command.Context,
 	cmdName command.Name,
+	subCmdName string,
 	prjCfg valid.MergedProjectCfg,
 	commentFlags []string,
 	repoDir string,
-	automerge, deleteSourceBranchOnMerge, parallelApply, parallelPlan, verbose bool,
+	automerge, parallelApply, parallelPlan, verbose, abortOnExcecutionOrderFail bool,
+	terraformClient terraform.Client,
 ) (projectCmds []command.ProjectContext) {
 	cb.ProjectCounter.Inc(1)
 
 	cmds := cb.ProjectCommandContextBuilder.BuildProjectContext(
-		ctx, cmdName, prjCfg, commentFlags, repoDir, automerge, deleteSourceBranchOnMerge, parallelApply, parallelPlan, verbose,
+		ctx, cmdName, subCmdName, prjCfg, commentFlags, repoDir, automerge, parallelApply, parallelPlan, verbose, abortOnExcecutionOrderFail, terraformClient,
 	)
 
 	projectCmds = []command.ProjectContext{}
@@ -73,7 +74,7 @@ func (cb *CommandScopedStatsProjectCommandContextBuilder) BuildProjectContext(
 		// specifically use the command name in the context instead of the arg
 		// since we can return multiple commands worth of contexts for a given command name arg
 		// to effectively pipeline them.
-		cmd.SetScope(cmd.CommandName.String())
+		cmd.Scope = cmd.SetProjectScopeTags(cmd.Scope)
 		projectCmds = append(projectCmds, cmd)
 	}
 
@@ -87,10 +88,12 @@ type DefaultProjectCommandContextBuilder struct {
 func (cb *DefaultProjectCommandContextBuilder) BuildProjectContext(
 	ctx *command.Context,
 	cmdName command.Name,
+	subName string,
 	prjCfg valid.MergedProjectCfg,
 	commentFlags []string,
 	repoDir string,
-	automerge, deleteSourceBranchOnMerge, parallelApply, parallelPlan, verbose bool,
+	automerge, parallelApply, parallelPlan, verbose, abortOnExcecutionOrderFail bool,
+	terraformClient terraform.Client,
 ) (projectCmds []command.ProjectContext) {
 	ctx.Log.Debug("Building project command context for %s", cmdName)
 
@@ -105,29 +108,40 @@ func (cb *DefaultProjectCommandContextBuilder) BuildProjectContext(
 		steps = []valid.Step{{
 			StepName: "version",
 		}}
+	case command.Import:
+		steps = prjCfg.Workflow.Import.Steps
+	case command.State:
+		switch subName {
+		case "rm":
+			steps = prjCfg.Workflow.StateRm.Steps
+		default:
+			// comment_parser prevent invalid subcommand, so not need to handle this.
+			// if comes here, state_command_runner will respond on PR, so it's enough to do log only.
+			ctx.Log.Err("unknown state subcommand: %s", subName)
+		}
 	}
 
 	// If TerraformVersion not defined in config file look for a
 	// terraform.require_version block.
 	if prjCfg.TerraformVersion == nil {
-		prjCfg.TerraformVersion = getTfVersion(ctx, filepath.Join(repoDir, prjCfg.RepoRelDir))
+		prjCfg.TerraformVersion = terraformClient.DetectVersion(ctx.Log, filepath.Join(repoDir, prjCfg.RepoRelDir))
 	}
 
 	projectCmdContext := newProjectCommandContext(
 		ctx,
 		cmdName,
 		cb.CommentBuilder.BuildApplyComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name, prjCfg.AutoMergeDisabled),
+		cb.CommentBuilder.BuildApprovePoliciesComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name),
 		cb.CommentBuilder.BuildPlanComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name, commentFlags),
-		cb.CommentBuilder.BuildVersionComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name),
 		prjCfg,
 		steps,
 		prjCfg.PolicySets,
 		escapeArgs(commentFlags),
 		automerge,
-		deleteSourceBranchOnMerge,
 		parallelApply,
 		parallelPlan,
 		verbose,
+		abortOnExcecutionOrderFail,
 		ctx.Scope,
 		ctx.PullRequestStatus,
 	)
@@ -145,30 +159,34 @@ type PolicyCheckProjectCommandContextBuilder struct {
 func (cb *PolicyCheckProjectCommandContextBuilder) BuildProjectContext(
 	ctx *command.Context,
 	cmdName command.Name,
+	subCmdName string,
 	prjCfg valid.MergedProjectCfg,
 	commentFlags []string,
 	repoDir string,
-	automerge, deleteSourceBranchOnMerge, parallelApply, parallelPlan, verbose bool,
+	automerge, parallelApply, parallelPlan, verbose, abortOnExcecutionOrderFail bool,
+	terraformClient terraform.Client,
 ) (projectCmds []command.ProjectContext) {
 	ctx.Log.Debug("PolicyChecks are enabled")
 
 	// If TerraformVersion not defined in config file look for a
 	// terraform.require_version block.
 	if prjCfg.TerraformVersion == nil {
-		prjCfg.TerraformVersion = getTfVersion(ctx, filepath.Join(repoDir, prjCfg.RepoRelDir))
+		prjCfg.TerraformVersion = terraformClient.DetectVersion(ctx.Log, filepath.Join(repoDir, prjCfg.RepoRelDir))
 	}
 
 	projectCmds = cb.ProjectCommandContextBuilder.BuildProjectContext(
 		ctx,
 		cmdName,
+		subCmdName,
 		prjCfg,
 		commentFlags,
 		repoDir,
 		automerge,
-		deleteSourceBranchOnMerge,
 		parallelApply,
 		parallelPlan,
 		verbose,
+		abortOnExcecutionOrderFail,
+		terraformClient,
 	)
 
 	if cmdName == command.Plan {
@@ -179,17 +197,17 @@ func (cb *PolicyCheckProjectCommandContextBuilder) BuildProjectContext(
 			ctx,
 			command.PolicyCheck,
 			cb.CommentBuilder.BuildApplyComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name, prjCfg.AutoMergeDisabled),
+			cb.CommentBuilder.BuildApprovePoliciesComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name),
 			cb.CommentBuilder.BuildPlanComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name, commentFlags),
-			cb.CommentBuilder.BuildVersionComment(prjCfg.RepoRelDir, prjCfg.Workspace, prjCfg.Name),
 			prjCfg,
 			steps,
 			prjCfg.PolicySets,
 			escapeArgs(commentFlags),
 			automerge,
-			deleteSourceBranchOnMerge,
 			parallelApply,
 			parallelPlan,
 			verbose,
+			abortOnExcecutionOrderFail,
 			ctx.Scope,
 			ctx.PullRequestStatus,
 		))
@@ -203,22 +221,23 @@ func (cb *PolicyCheckProjectCommandContextBuilder) BuildProjectContext(
 func newProjectCommandContext(ctx *command.Context,
 	cmd command.Name,
 	applyCmd string,
+	approvePoliciesCmd string,
 	planCmd string,
-	versionCmd string,
 	projCfg valid.MergedProjectCfg,
 	steps []valid.Step,
 	policySets valid.PolicySets,
 	escapedCommentArgs []string,
 	automergeEnabled bool,
-	deleteSourceBranchOnMerge,
 	parallelApplyEnabled bool,
 	parallelPlanEnabled bool,
 	verbose bool,
+	abortOnExcecutionOrderFail bool,
 	scope tally.Scope,
 	pullStatus models.PullReqStatus,
 ) command.ProjectContext {
 
 	var projectPlanStatus models.ProjectPlanStatus
+	var projectPolicyStatus []models.PolicySetStatus
 
 	if ctx.PullStatus != nil {
 		for _, project := range ctx.PullStatus.Projects {
@@ -226,11 +245,13 @@ func newProjectCommandContext(ctx *command.Context,
 			// if name is not used, let's match the directory
 			if projCfg.Name == "" && project.RepoRelDir == projCfg.RepoRelDir {
 				projectPlanStatus = project.Status
+				projectPolicyStatus = project.PolicyStatus
 				break
 			}
 
 			if projCfg.Name != "" && project.ProjectName == projCfg.Name {
 				projectPlanStatus = project.Status
+				projectPolicyStatus = project.PolicyStatus
 				break
 			}
 		}
@@ -239,10 +260,12 @@ func newProjectCommandContext(ctx *command.Context,
 	return command.ProjectContext{
 		CommandName:                cmd,
 		ApplyCmd:                   applyCmd,
+		ApprovePoliciesCmd:         approvePoliciesCmd,
 		BaseRepo:                   ctx.Pull.BaseRepo,
 		EscapedCommentArgs:         escapedCommentArgs,
 		AutomergeEnabled:           automergeEnabled,
-		DeleteSourceBranchOnMerge:  deleteSourceBranchOnMerge,
+		DeleteSourceBranchOnMerge:  projCfg.DeleteSourceBranchOnMerge,
+		RepoLocking:                projCfg.RepoLocking,
 		ParallelApplyEnabled:       parallelApplyEnabled,
 		ParallelPlanEnabled:        parallelPlanEnabled,
 		ParallelPolicyCheckEnabled: parallelPlanEnabled,
@@ -252,9 +275,12 @@ func newProjectCommandContext(ctx *command.Context,
 		Log:                        ctx.Log,
 		Scope:                      scope,
 		ProjectPlanStatus:          projectPlanStatus,
+		ProjectPolicyStatus:        projectPolicyStatus,
 		Pull:                       ctx.Pull,
 		ProjectName:                projCfg.Name,
+		PlanRequirements:           projCfg.PlanRequirements,
 		ApplyRequirements:          projCfg.ApplyRequirements,
+		ImportRequirements:         projCfg.ImportRequirements,
 		RePlanCmd:                  planCmd,
 		RepoRelDir:                 projCfg.RepoRelDir,
 		RepoConfigVersion:          projCfg.RepoCfgVersion,
@@ -263,9 +289,12 @@ func newProjectCommandContext(ctx *command.Context,
 		Verbose:                    verbose,
 		Workspace:                  projCfg.Workspace,
 		PolicySets:                 policySets,
+		PolicySetTarget:            ctx.PolicySet,
+		ClearPolicyApproval:        ctx.ClearPolicyApproval,
 		PullReqStatus:              pullStatus,
 		JobID:                      uuid.New().String(),
 		ExecutionOrderGroup:        projCfg.ExecutionOrderGroup,
+		AbortOnExcecutionOrderFail: abortOnExcecutionOrderFail,
 	}
 }
 
@@ -279,37 +308,4 @@ func escapeArgs(args []string) []string {
 		escaped = append(escaped, escapedArg)
 	}
 	return escaped
-}
-
-// Extracts required_version from Terraform configuration.
-// Returns nil if unable to determine version from configuration.
-func getTfVersion(ctx *command.Context, absProjDir string) *version.Version {
-	module, diags := tfconfig.LoadModule(absProjDir)
-	if diags.HasErrors() {
-		ctx.Log.Err("trying to detect required version: %s", diags.Error())
-		return nil
-	}
-
-	if len(module.RequiredCore) != 1 {
-		ctx.Log.Info("cannot determine which version to use from terraform configuration, detected %d possibilities.", len(module.RequiredCore))
-		return nil
-	}
-	requiredVersionSetting := module.RequiredCore[0]
-
-	// We allow `= x.y.z`, `=x.y.z` or `x.y.z` where `x`, `y` and `z` are integers.
-	re := regexp.MustCompile(`^=?\s*([^\s]+)\s*$`)
-	matched := re.FindStringSubmatch(requiredVersionSetting)
-	if len(matched) == 0 {
-		ctx.Log.Debug("did not specify exact version in terraform configuration, found %q", requiredVersionSetting)
-		return nil
-	}
-	ctx.Log.Debug("found required_version setting of %q", requiredVersionSetting)
-	version, err := version.NewVersion(matched[1])
-	if err != nil {
-		ctx.Log.Debug(err.Error())
-		return nil
-	}
-
-	ctx.Log.Info("detected module requires version: %q", version.String())
-	return version
 }

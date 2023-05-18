@@ -20,15 +20,16 @@ For this you'll need to:
 * Select your Slack workspace
 * Click `Create App`
 * On the left go to `oAuth & Permissions`
-* Copy the `Bot User OAuth Token` and provide it to Atlantis by using `--slack-token=xoxb-xxxxxxxxxxx` or via the environment `ATLANTIS_SLACK_TOKEN=xoxb-xxxxxxxxxxx`.
-* Scroll down to scopes and add the following:
+* Scroll down to Scopes | Bot Token Scopes and add the following OAuth scopes:
   * `channels:read`
   * `chat:write`
   * `groups:read`
   * `incoming-webhook`
   * `mpim:read`
 * Install the app onto your Slack workspace
-* Create a channel in your Slack workspace (e.g. `my-channel`), and add the app to it
+* Copy the `Bot User OAuth Token` and provide it to Atlantis by using `--slack-token=xoxb-xxxxxxxxxxx` or via the environment `ATLANTIS_SLACK_TOKEN=xoxb-xxxxxxxxxxx`.
+* Create a channel in your Slack workspace (e.g. `my-channel`) or use existing
+* Add the app to Created channel or existing channel ( click channel name then tab integrations, there Click "Add apps"
 
 ## Configuring Atlantis
 
@@ -44,7 +45,7 @@ webhooks:
   channel: my-channel
 ```
 
-If you are deploying Atlantis as a Helm chart, this can be implemented via the `config` parameter available for [chart customizations](https://github.com/runatlantis/helm-charts/blob/main/README.md#customization):
+If you are deploying Atlantis as a Helm chart, this can be implemented via the `config` parameter available for [chart customizations](https://github.com/runatlantis/helm-charts#customization):
 
 ```
 

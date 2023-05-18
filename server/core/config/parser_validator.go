@@ -7,16 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	shlex "github.com/flynn-archive/go-shlex"
 	validation "github.com/go-ozzo/ozzo-validation"
+	shlex "github.com/google/shlex"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/core/config/raw"
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	yaml "gopkg.in/yaml.v2"
 )
-
-// AtlantisYAMLFilename is the name of the config file for each repo.
-const AtlantisYAMLFilename = "atlantis.yaml"
 
 // ParserValidator parses and validates server-side repo config files and
 // repo-level atlantis.yaml files.
@@ -25,15 +22,15 @@ type ParserValidator struct{}
 // HasRepoCfg returns true if there is a repo config (atlantis.yaml) file
 // for the repo at absRepoDir.
 // Returns an error if for some reason it can't read that directory.
-func (p *ParserValidator) HasRepoCfg(absRepoDir string) (bool, error) {
+func (p *ParserValidator) HasRepoCfg(absRepoDir, repoConfigFile string) (bool, error) {
 	// Checks for a config file with an invalid extension (atlantis.yml)
 	const invalidExtensionFilename = "atlantis.yml"
 	_, err := os.Stat(p.repoCfgPath(absRepoDir, invalidExtensionFilename))
 	if err == nil {
-		return false, errors.Errorf("found %q as config file; rename using the .yaml extension - %q", invalidExtensionFilename, AtlantisYAMLFilename)
+		return false, errors.Errorf("found %q as config file; rename using the .yaml extension", invalidExtensionFilename)
 	}
 
-	_, err = os.Stat(p.repoCfgPath(absRepoDir, AtlantisYAMLFilename))
+	_, err = os.Stat(p.repoCfgPath(absRepoDir, repoConfigFile))
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -43,22 +40,23 @@ func (p *ParserValidator) HasRepoCfg(absRepoDir string) (bool, error) {
 // ParseRepoCfg returns the parsed and validated atlantis.yaml config for the
 // repo at absRepoDir.
 // If there was no config file, it will return an os.IsNotExist(error).
-func (p *ParserValidator) ParseRepoCfg(absRepoDir string, globalCfg valid.GlobalCfg, repoID string) (valid.RepoCfg, error) {
-	configFile := p.repoCfgPath(absRepoDir, AtlantisYAMLFilename)
+func (p *ParserValidator) ParseRepoCfg(absRepoDir string, globalCfg valid.GlobalCfg, repoID string, branch string) (valid.RepoCfg, error) {
+	repoConfigFile := globalCfg.RepoConfigFile(repoID)
+	configFile := p.repoCfgPath(absRepoDir, repoConfigFile)
 	configData, err := os.ReadFile(configFile) // nolint: gosec
 
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return valid.RepoCfg{}, errors.Wrapf(err, "unable to read %s file", AtlantisYAMLFilename)
+			return valid.RepoCfg{}, errors.Wrapf(err, "unable to read %s file", repoConfigFile)
 		}
 		// Don't wrap os.IsNotExist errors because we want our callers to be
 		// able to detect if it's a NotExist err.
 		return valid.RepoCfg{}, err
 	}
-	return p.ParseRepoCfgData(configData, globalCfg, repoID)
+	return p.ParseRepoCfgData(configData, globalCfg, repoID, branch)
 }
 
-func (p *ParserValidator) ParseRepoCfgData(repoCfgData []byte, globalCfg valid.GlobalCfg, repoID string) (valid.RepoCfg, error) {
+func (p *ParserValidator) ParseRepoCfgData(repoCfgData []byte, globalCfg valid.GlobalCfg, repoID string, branch string) (valid.RepoCfg, error) {
 	var rawConfig raw.RepoCfg
 	if err := yaml.UnmarshalStrict(repoCfgData, &rawConfig); err != nil {
 		return valid.RepoCfg{}, err
@@ -71,6 +69,21 @@ func (p *ParserValidator) ParseRepoCfgData(repoCfgData []byte, globalCfg valid.G
 	}
 
 	validConfig := rawConfig.ToValid()
+
+	// Filter the repo config's projects based on pull request's branch. Only
+	// keep projects that either:
+	//
+	//   - Have no branch regex defined at all (i.e. match all branches), or
+	//   - Those that have branch regex matching the PR's base branch.
+	//
+	i := 0
+	for _, p := range validConfig.Projects {
+		if branch == "" || p.BranchRegex == nil || p.BranchRegex.Match([]byte(branch)) {
+			validConfig.Projects[i] = p
+			i++
+		}
+	}
+	validConfig.Projects = validConfig.Projects[:i]
 
 	// We do the project name validation after we get the valid config because
 	// we need the defaults of dir and workspace to be populated.

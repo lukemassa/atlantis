@@ -22,7 +22,7 @@ func TestProjectResult_IsSuccessful(t *testing.T) {
 		},
 		"policy_check success": {
 			command.ProjectResult{
-				PolicyCheckSuccess: &models.PolicyCheckSuccess{},
+				PolicyCheckResults: &models.PolicyCheckResults{},
 			},
 			true,
 		},
@@ -103,7 +103,7 @@ func TestProjectResult_PlanStatus(t *testing.T) {
 		{
 			p: command.ProjectResult{
 				Command:            command.PolicyCheck,
-				PolicyCheckSuccess: &models.PolicyCheckSuccess{},
+				PolicyCheckResults: &models.PolicyCheckResults{},
 			},
 			expStatus: models.PassedPolicyCheckStatus,
 		},
@@ -117,7 +117,7 @@ func TestProjectResult_PlanStatus(t *testing.T) {
 		{
 			p: command.ProjectResult{
 				Command:            command.ApprovePolicies,
-				PolicyCheckSuccess: &models.PolicyCheckSuccess{},
+				PolicyCheckResults: &models.PolicyCheckResults{},
 			},
 			expStatus: models.PassedPolicyCheckStatus,
 		},
@@ -222,6 +222,70 @@ func TestPlanSuccess_Summary(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.expResult, func(t *testing.T) {
 			Equals(t, c.expResult, c.p.PlanSuccess.Summary())
+		})
+	}
+}
+
+var Summary string
+
+func BenchmarkPlanSuccess_Summary(b *testing.B) {
+	var s string
+
+	fixtures := map[string]string{
+		"changes": `
+					An execution plan has been generated and is shown below.
+					Resource actions are indicated with the following symbols:
+					  - destroy
+
+					Terraform will perform the following actions:
+
+					  - null_resource.hi[1]
+
+
+					Plan: 0 to add, 0 to change, 1 to destroy.`,
+		"no changes": `
+					An execution plan has been generated and is shown below.
+					Resource actions are indicated with the following symbols:
+
+					No changes. Infrastructure is up-to-date.`,
+		"changes outside Terraform": `
+					Note: Objects have changed outside of Terraform
+
+					Terraform detected the following changes made outside of Terraform since the
+					last "terraform apply":
+
+					No changes. Your infrastructure matches the configuration.`,
+		"changes and changes outside": `
+					Note: Objects have changed outside of Terraform
+
+					Terraform detected the following changes made outside of Terraform since the
+					last "terraform apply":
+
+					An execution plan has been generated and is shown below.
+					Resource actions are indicated with the following symbols:
+					  - destroy
+
+					Terraform will perform the following actions:
+
+					  - null_resource.hi[1]
+
+
+					Plan: 0 to add, 0 to change, 1 to destroy.`,
+		"empty summary, no matches": `No match, expect empty`,
+	}
+
+	for name, output := range fixtures {
+		p := &models.PlanSuccess{
+			TerraformOutput: output,
+		}
+
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				s = p.Summary()
+			}
+
+			Summary = s
 		})
 	}
 }

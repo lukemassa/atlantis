@@ -1,6 +1,7 @@
 package events
 
 import (
+	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs"
@@ -22,6 +23,9 @@ func NewPlanCommandRunner(
 	parallelPoolSize int,
 	SilenceNoProjects bool,
 	pullStatusFetcher PullStatusFetcher,
+	lockingLocker locking.Locker,
+	discardApprovalOnPlan bool,
+	pullReqStatusFetcher vcs.PullReqStatusFetcher,
 ) *PlanCommandRunner {
 	return &PlanCommandRunner{
 		silenceVCSStatusNoPlans:    silenceVCSStatusNoPlans,
@@ -39,6 +43,9 @@ func NewPlanCommandRunner(
 		parallelPoolSize:           parallelPoolSize,
 		SilenceNoProjects:          SilenceNoProjects,
 		pullStatusFetcher:          pullStatusFetcher,
+		lockingLocker:              lockingLocker,
+		DiscardApprovalOnPlan:      discardApprovalOnPlan,
+		pullReqStatusFetcher:       pullReqStatusFetcher,
 	}
 }
 
@@ -64,6 +71,11 @@ type PlanCommandRunner struct {
 	autoMerger                 *AutoMerger
 	parallelPoolSize           int
 	pullStatusFetcher          PullStatusFetcher
+	lockingLocker              locking.Locker
+	// DiscardApprovalOnPlan controls if all already existing approvals should be removed/dismissed before executing
+	// a plan.
+	DiscardApprovalOnPlan bool
+	pullReqStatusFetcher  vcs.PullReqStatusFetcher
 }
 
 func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
@@ -106,11 +118,19 @@ func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
 		ctx.Log.Warn("unable to update plan commit status: %s", err)
 	}
 
+	// discard previous plans that might not be relevant anymore
+	ctx.Log.Debug("deleting previous plans and locks")
+	p.deletePlans(ctx)
+	_, err = p.lockingLocker.UnlockByPull(baseRepo.FullName, pull.Num)
+	if err != nil {
+		ctx.Log.Err("deleting locks: %s", err)
+	}
+
 	// Only run commands in parallel if enabled
 	var result command.Result
 	if p.isParallelEnabled(projectCmds) {
 		ctx.Log.Info("Running plans in parallel")
-		result = runProjectCmdsParallel(projectCmds, p.prjCmdRunner.Plan, p.parallelPoolSize)
+		result = runProjectCmdsParallelGroups(ctx, projectCmds, p.prjCmdRunner.Plan, p.parallelPoolSize)
 	} else {
 		result = runProjectCmds(projectCmds, p.prjCmdRunner.Plan)
 	}
@@ -151,6 +171,21 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 	baseRepo := ctx.Pull.BaseRepo
 	pull := ctx.Pull
 
+	ctx.PullRequestStatus, err = p.pullReqStatusFetcher.FetchPullStatus(pull)
+	if err != nil {
+		// On error we continue the request with mergeable assumed false.
+		// We want to continue because not all apply's will need this status,
+		// only if they rely on the mergeability requirement.
+		// All PullRequestStatus fields are set to false by default when error.
+		ctx.Log.Warn("unable to get pull request status: %s. Continuing with mergeable and approved assumed false", err)
+	}
+
+	if p.DiscardApprovalOnPlan {
+		if err = p.pullUpdater.VCSClient.DiscardReviews(baseRepo, pull); err != nil {
+			ctx.Log.Err("failed to remove approvals: %s", err)
+		}
+	}
+
 	if err = p.commitStatusUpdater.UpdateCombined(baseRepo, pull, models.PendingCommitStatus, command.Plan); err != nil {
 		ctx.Log.Warn("unable to update commit status: %s", err)
 	}
@@ -167,12 +202,32 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 	if len(projectCmds) == 0 && p.SilenceNoProjects {
 		ctx.Log.Info("determined there was no project to run plan in")
 		if !p.silenceVCSStatusNoProjects {
-			// If there were no projects modified, we set successful commit statuses
-			// with 0/0 projects planned successfully because some users require
-			// the Atlantis status to be passing for all pull requests.
-			ctx.Log.Debug("setting VCS status to success with no projects found")
-			if err := p.commitStatusUpdater.UpdateCombinedCount(baseRepo, pull, models.SuccessCommitStatus, command.Plan, 0, 0); err != nil {
-				ctx.Log.Warn("unable to update commit status: %s", err)
+			if cmd.IsForSpecificProject() {
+				// With a specific plan, just reset the status so it's not stuck in pending state
+				pullStatus, err := p.pullStatusFetcher.GetPullStatus(pull)
+				if err != nil {
+					ctx.Log.Warn("unable to fetch pull status: %s", err)
+					return
+				}
+				if pullStatus == nil {
+					// default to 0/0
+					ctx.Log.Debug("setting VCS status to 0/0 success as no previous state was found")
+					if err := p.commitStatusUpdater.UpdateCombinedCount(baseRepo, pull, models.SuccessCommitStatus, command.Plan, 0, 0); err != nil {
+						ctx.Log.Warn("unable to update commit status: %s", err)
+					}
+					return
+				}
+				ctx.Log.Debug("resetting VCS status")
+				p.updateCommitStatus(ctx, *pullStatus)
+			} else {
+				// With a generic plan, we set successful commit statuses
+				// with 0/0 projects planned successfully because some users require
+				// the Atlantis status to be passing for all pull requests.
+				// Does not apply to skipped runs for specific projects
+				ctx.Log.Debug("setting VCS status to success with no projects found")
+				if err := p.commitStatusUpdater.UpdateCombinedCount(baseRepo, pull, models.SuccessCommitStatus, command.Plan, 0, 0); err != nil {
+					ctx.Log.Warn("unable to update commit status: %s", err)
+				}
 			}
 		}
 		return
@@ -180,11 +235,22 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 
 	projectCmds, policyCheckCmds := p.partitionProjectCmds(ctx, projectCmds)
 
+	// if the plan is generic, new plans will be generated based on changes
+	// discard previous plans that might not be relevant anymore
+	if !cmd.IsForSpecificProject() {
+		ctx.Log.Debug("deleting previous plans and locks")
+		p.deletePlans(ctx)
+		_, err = p.lockingLocker.UnlockByPull(baseRepo.FullName, pull.Num)
+		if err != nil {
+			ctx.Log.Err("deleting locks: %s", err)
+		}
+	}
+
 	// Only run commands in parallel if enabled
 	var result command.Result
 	if p.isParallelEnabled(projectCmds) {
-		ctx.Log.Info("Running applies in parallel")
-		result = runProjectCmdsParallel(projectCmds, p.prjCmdRunner.Plan, p.parallelPoolSize)
+		ctx.Log.Info("Running plans in parallel")
+		result = runProjectCmdsParallelGroups(ctx, projectCmds, p.prjCmdRunner.Plan, p.parallelPoolSize)
 	} else {
 		result = runProjectCmds(projectCmds, p.prjCmdRunner.Plan)
 	}

@@ -6,10 +6,15 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v5
+      - uses: actions/stale@v8
         with:
-          stale-pr-message: 'This issue is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days.'
-          days-before-stale: 30
-          days-before-close: 5
+          stale-pr-message: 'This issue is stale because it has been open for 1 month with no activity. Remove stale label or comment or this will be closed in 1 month.'
+          stale-issue-message: This issue is stale because it has been open for 1 month with no activity. Remove stale label or comment or this will be closed in 1 month.'
+          remove-stale-when-updated: true
+          exempt-pr-labels: "never-stale"
+          exempt-issue-labels: "never-stale"
+          # 1 month
+          days-before-stale: 31
+          # 1 month
+          days-before-close: 31
           only-labels: 'waiting-on-response'
-  

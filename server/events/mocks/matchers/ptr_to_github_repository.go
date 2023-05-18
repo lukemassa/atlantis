@@ -2,11 +2,10 @@
 package matchers
 
 import (
+	"github.com/petergtz/pegomock"
 	"reflect"
 
-	"github.com/petergtz/pegomock"
-
-	github "github.com/google/go-github/v31/github"
+	github "github.com/google/go-github/v52/github"
 )
 
 func AnyPtrToGithubRepository() *github.Repository {

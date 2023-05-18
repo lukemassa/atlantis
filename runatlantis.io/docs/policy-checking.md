@@ -10,17 +10,23 @@ for using this step include:
 
 ## How it works?
 
-Enabling "policy checking" in addition to the [mergeable apply requirement](https://www.runatlantis.io/docs/apply-requirements.html#supported-requirements) blocks applies on plans that fail any of the defined conftest policies.
+Enabling "policy checking" in addition to the [mergeable apply requirement](/docs/command-requirements.html#supported-requirements) blocks applies on plans that fail any of the defined conftest policies.
 
 ![Policy Check Apply Failure](./images/policy-check-apply-failure.png)
 
 ![Policy Check Apply Status Failure](./images/policy-check-apply-status-failure.png)
 
-Any failures need to either be addressed in a successive commit, or approved by a blessed owner. This approval is independent of the approval apply requirement which can coexist in the policy checking workflow. After an approval, the apply can proceed.
+Any failures need to either be addressed in a successive commit, or approved by top-level owner(s) of policies or the owner(s) of the policy set in question. Policy approvals are independent of the approval apply requirement which can coexist in the policy checking workflow. After policies are approved, the apply can proceed.
 
 ![Policy Check Approval](./images/policy-check-approval.png)
 
-:::warning
+
+Policy approvals may be cleared either by re-planing, or by issuing the following command:
+```
+atlantis approve_policies --clear-policy-approvals
+```
+
+::: warning
 Any plans following the approval will discard any policy approval and prompt again for it.
 :::
 
@@ -44,14 +50,23 @@ policies:
     users:
       - nishkrishnan
   policy_sets:
-    - name: null_resource_warning
-      path: <CODE_DIRECTORY>/policies/null_resource_warning/
+    - name: deny_null_resource
+      path: <CODE_DIRECTORY>/policies/deny_null_resource/
       source: local
+    - name: deny_local_exec
+      path: <CODE_DIRECTORY>/policies/deny_local_exec/
+      source: local
+      approve_count: 2
+      owners:
+        users:
+          - pseudomorph
 ```
 
 - `name` - A name of your policy set.
 - `path` - Path to a policies directory. *Note: replace `<CODE_DIRECTORY>` with absolute dir path to conftest policy/policies.*
 - `source` - Tells atlantis where to fetch the policies from. Currently you can only host policies locally by using `local`.
+- `owners` - Defines the users/teams which are able to approve a specific policy set.
+- `approve_count` - Defines the number of approvals needed to bypass policy checks. Defaults to the top-level policies configuration, if not specified.
 
 By default conftest is configured to only run the `main` package. If you wish to run specific/multiple policies consider passing `--namespace` or `--all-namespaces` to conftest with [`extra_args`](https://www.runatlantis.io/docs/custom-workflows.html#adding-extra-arguments-to-terraform-commands) via a custom workflow as shown in the below example.
 
@@ -120,3 +135,59 @@ deny[msg] {
 ```
 
 That's it! Now your Atlantis instance is configured to run policies on your Terraform plans 🎉
+
+## Customizing the conftest command
+
+### Pulling policies from a remote location
+
+Conftest supports [pulling policies](https://www.conftest.dev/sharing/#pulling) from remote locations such as S3, git, OCI, and other protocols supported by the [go-getter](https://github.com/hashicorp/go-getter) library. The key [`extra_args`](https://www.runatlantis.io/docs/custom-workflows.html#adding-extra-arguments-to-terraform-commands) can be used to pass in the [`--update`](https://www.conftest.dev/sharing/#-update-flag) flag to tell `conftest` to pull the policies into the project folder before running the policy check.
+
+```yaml
+workflows:
+  custom:
+    plan:
+      steps:
+        - init
+        - plan
+    policy_check:
+      steps:
+        - policy_check:
+            extra_args: ["--update", "s3::https://s3.amazonaws.com/bucket/foo"]
+```
+
+Note that authentication may need to be configured separately if pulling policies from sources that require it. For example, to pull policies from an S3 bucket, Atlantis host can be configured with a default AWS profile that has permission to `s3:GetObject` and `s3:ListBucket` from the S3 bucket.
+
+### Running policy check against Terraform source code
+
+By default, Atlantis runs the policy check against the [`SHOWFILE`](https://www.runatlantis.io/docs/custom-workflows.html#custom-run-command). In order to run the policy test against Terraform files directly, override the default `conftest` command used and pass in `*.tf` as one of the inputs to `conftest`. The `show` step is required so that Atlantis will generate the `SHOWFILE`.
+
+```yaml
+workflows:
+  custom:
+    policy_check:
+      steps:
+        - show
+        - run: conftest test $SHOWFILE *.tf
+```
+
+### Quiet policy checks
+
+By default, Atlantis will add a comment to all pull requests with the policy check result - both successes and failures. Version 0.21.0 added the [`--quiet-policy-checks`](server-configuration.html#quiet-policy-checks) option, which will instead only add comments when policy checks fail, significantly reducing the number of comments when most policy check results succeed.
+
+
+### Data for custom run steps
+
+When the policy check workflow runs, a file is created in the working directory which contains information about the status of each policy set tested. This data may be useful in custom run steps to generate metrics or notifications. The file contains JSON data in the following format:
+
+```json
+[
+  {
+    "PolicySetName":  "policy1",
+    "ConftestOutput": "",
+    "Passed":         false,
+    "ReqApprovals":   1,
+    "CurApprovals":   0
+  }
+]
+
+```

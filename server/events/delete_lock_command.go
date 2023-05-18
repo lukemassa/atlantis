@@ -1,13 +1,12 @@
 package events
 
 import (
-	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_delete_lock_command.go DeleteLockCommand
+//go:generate pegomock generate -m --package mocks -o mocks/mock_delete_lock_command.go DeleteLockCommand
 
 // DeleteLockCommand is the first step after a command request has been parsed.
 type DeleteLockCommand interface {
@@ -21,7 +20,7 @@ type DefaultDeleteLockCommand struct {
 	Logger           logging.SimpleLogging
 	WorkingDir       WorkingDir
 	WorkingDirLocker WorkingDirLocker
-	DB               *db.BoltDB
+	Backend          locking.Backend
 }
 
 // DeleteLock handles deleting the lock at id
@@ -76,7 +75,7 @@ func (l *DefaultDeleteLockCommand) deleteWorkingDir(lock models.ProjectLock) {
 			l.Logger.Err("unable to delete workspace: %s", err)
 		}
 	}
-	if err := l.DB.UpdateProjectStatus(lock.Pull, lock.Workspace, lock.Project.Path, models.DiscardedPlanStatus); err != nil {
+	if err := l.Backend.UpdateProjectStatus(lock.Pull, lock.Workspace, lock.Project.Path, models.DiscardedPlanStatus); err != nil {
 		l.Logger.Err("unable to delete project status: %s", err)
 	}
 }

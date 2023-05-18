@@ -1,6 +1,9 @@
 package events
 
 import (
+	"fmt"
+
+	"github.com/google/uuid"
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	"github.com/runatlantis/atlantis/server/core/runtime"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -8,10 +11,17 @@ import (
 	"github.com/runatlantis/atlantis/server/events/vcs"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_post_workflows_hooks_command_runner.go PostWorkflowHooksCommandRunner
+//go:generate pegomock generate -m --package mocks -o mocks/mock_post_workflow_hook_url_generator.go PostWorkflowHookURLGenerator
+
+// PostWorkflowHookURLGenerator generates urls to view the post workflow progress.
+type PostWorkflowHookURLGenerator interface {
+	GenerateProjectWorkflowHookURL(hookID string) (string, error)
+}
+
+//go:generate pegomock generate -m --package mocks -o mocks/mock_post_workflows_hooks_command_runner.go PostWorkflowHooksCommandRunner
 
 type PostWorkflowHooksCommandRunner interface {
-	RunPostHooks(ctx *command.Context) error
+	RunPostHooks(ctx *command.Context, cmd *CommentCommand) error
 }
 
 // DefaultPostWorkflowHooksCommandRunner is the first step when processing a workflow hook commands.
@@ -21,11 +31,13 @@ type DefaultPostWorkflowHooksCommandRunner struct {
 	WorkingDir             WorkingDir
 	GlobalCfg              valid.GlobalCfg
 	PostWorkflowHookRunner runtime.PostWorkflowHookRunner
+	CommitStatusUpdater    CommitStatusUpdater
+	Router                 PostWorkflowHookURLGenerator
 }
 
 // RunPostHooks runs post_workflow_hooks after a plan/apply has completed
 func (w *DefaultPostWorkflowHooksCommandRunner) RunPostHooks(
-	ctx *command.Context,
+	ctx *command.Context, cmd *CommentCommand,
 ) error {
 	pull := ctx.Pull
 	baseRepo := pull.BaseRepo
@@ -59,14 +71,21 @@ func (w *DefaultPostWorkflowHooksCommandRunner) RunPostHooks(
 		return err
 	}
 
+	var escapedArgs []string
+	if cmd != nil {
+		escapedArgs = escapeArgs(cmd.Flags)
+	}
+
 	err = w.runHooks(
 		models.WorkflowHookCommandContext{
-			BaseRepo: baseRepo,
-			HeadRepo: headRepo,
-			Log:      log,
-			Pull:     pull,
-			User:     user,
-			Verbose:  false,
+			BaseRepo:           baseRepo,
+			HeadRepo:           headRepo,
+			Log:                log,
+			Pull:               pull,
+			User:               user,
+			Verbose:            false,
+			EscapedCommentArgs: escapedArgs,
+			HookID:             uuid.NewString(),
 		},
 		postWorkflowHooks, repoDir)
 
@@ -83,13 +102,33 @@ func (w *DefaultPostWorkflowHooksCommandRunner) runHooks(
 	repoDir string,
 ) error {
 
-	for _, hook := range postWorkflowHooks {
-		_, err := w.PostWorkflowHookRunner.Run(ctx, hook.RunCommand, repoDir)
+	for i, hook := range postWorkflowHooks {
+		hookDescription := hook.StepDescription
+		if hookDescription == "" {
+			hookDescription = fmt.Sprintf("Post workflow hook #%d", i)
+		}
 
+		url, err := w.Router.GenerateProjectWorkflowHookURL(ctx.HookID)
 		if err != nil {
 			return err
 		}
-	}
 
+		if err := w.CommitStatusUpdater.UpdatePostWorkflowHook(ctx.Pull, models.PendingCommitStatus, hookDescription, "", url); err != nil {
+			ctx.Log.Warn("unable to update post workflow hook status: %s", err)
+		}
+
+		_, runtimeDesc, err := w.PostWorkflowHookRunner.Run(ctx, hook.RunCommand, repoDir)
+
+		if err != nil {
+			if err := w.CommitStatusUpdater.UpdatePostWorkflowHook(ctx.Pull, models.FailedCommitStatus, hookDescription, runtimeDesc, url); err != nil {
+				ctx.Log.Warn("unable to update post workflow hook status: %s", err)
+			}
+			return err
+		}
+
+		if err := w.CommitStatusUpdater.UpdatePostWorkflowHook(ctx.Pull, models.SuccessCommitStatus, hookDescription, runtimeDesc, url); err != nil {
+			ctx.Log.Warn("unable to update post workflow hook status: %s", err)
+		}
+	}
 	return nil
 }

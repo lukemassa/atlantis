@@ -25,53 +25,50 @@ var globalCfg = valid.NewGlobalCfgFromArgs(globalCfgArgs)
 
 func TestHasRepoCfg_DirDoesNotExist(t *testing.T) {
 	r := config.ParserValidator{}
-	exists, err := r.HasRepoCfg("/not/exist")
+	exists, err := r.HasRepoCfg("/not/exist", "unused.yaml")
 	Ok(t, err)
 	Equals(t, false, exists)
 }
 
 func TestHasRepoCfg_FileDoesNotExist(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	r := config.ParserValidator{}
-	exists, err := r.HasRepoCfg(tmpDir)
+	exists, err := r.HasRepoCfg(tmpDir, "not-exist.yaml")
 	Ok(t, err)
 	Equals(t, false, exists)
 }
 
 func TestHasRepoCfg_InvalidFileExtension(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
-	_, err := os.Create(filepath.Join(tmpDir, "atlantis.yml"))
+	tmpDir := t.TempDir()
+	repoConfigFile := "atlantis.yml"
+	_, err := os.Create(filepath.Join(tmpDir, repoConfigFile))
 	Ok(t, err)
 
 	r := config.ParserValidator{}
-	_, err = r.HasRepoCfg(tmpDir)
-	ErrContains(t, "found \"atlantis.yml\" as config file; rename using the .yaml extension - \"atlantis.yaml\"", err)
+	_, err = r.HasRepoCfg(tmpDir, repoConfigFile)
+	ErrContains(t, "found \"atlantis.yml\" as config file; rename using the .yaml extension", err)
 }
 
 func TestParseRepoCfg_DirDoesNotExist(t *testing.T) {
 	r := config.ParserValidator{}
-	_, err := r.ParseRepoCfg("/not/exist", globalCfg, "")
+	_, err := r.ParseRepoCfg("/not/exist", globalCfg, "", "")
 	Assert(t, os.IsNotExist(err), "exp not exist err")
 }
 
 func TestParseRepoCfg_FileDoesNotExist(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	r := config.ParserValidator{}
-	_, err := r.ParseRepoCfg(tmpDir, globalCfg, "")
+	_, err := r.ParseRepoCfg(tmpDir, globalCfg, "", "")
 	Assert(t, os.IsNotExist(err), "exp not exist err")
 }
 
 func TestParseRepoCfg_BadPermissions(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	err := os.WriteFile(filepath.Join(tmpDir, "atlantis.yaml"), nil, 0000)
 	Ok(t, err)
 
 	r := config.ParserValidator{}
-	_, err = r.ParseRepoCfg(tmpDir, globalCfg, "")
+	_, err = r.ParseRepoCfg(tmpDir, globalCfg, "", "")
 	ErrContains(t, "unable to read atlantis.yaml file: ", err)
 }
 
@@ -96,8 +93,7 @@ func TestParseCfgs_InvalidYAML(t *testing.T) {
 		},
 	}
 
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 
 	for _, c := range cases {
 		t.Run(c.description, func(t *testing.T) {
@@ -105,7 +101,7 @@ func TestParseCfgs_InvalidYAML(t *testing.T) {
 			err := os.WriteFile(confPath, []byte(c.input), 0600)
 			Ok(t, err)
 			r := config.ParserValidator{}
-			_, err = r.ParseRepoCfg(tmpDir, globalCfg, "")
+			_, err = r.ParseRepoCfg(tmpDir, globalCfg, "", "")
 			ErrContains(t, c.expErr, err)
 			globalCfgArgs := valid.GlobalCfgArgs{
 				AllowRepoCfg:  false,
@@ -179,6 +175,8 @@ workflows:
 								},
 							},
 						},
+						Import:  valid.DefaultImportStage,
+						StateRm: valid.DefaultStateRmStage,
 					},
 				},
 			},
@@ -345,12 +343,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"default": {
-						Name:        "default",
-						Plan:        valid.DefaultPlanStage,
-						Apply:       valid.DefaultApplyStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"default": defaultWorkflow("default"),
 				},
 			},
 		},
@@ -382,12 +375,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -421,12 +409,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -460,12 +443,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -499,12 +477,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -538,12 +511,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -577,12 +545,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -616,12 +579,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -655,12 +613,7 @@ workflows:
 					},
 				},
 				Workflows: map[string]valid.Workflow{
-					"myworkflow": {
-						Name:        "myworkflow",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"myworkflow": defaultWorkflow("myworkflow"),
 				},
 			},
 		},
@@ -800,6 +753,12 @@ workflows:
       steps:
       - plan # NOTE: we don't validate if they make sense
       - apply
+    import:
+      steps:
+      - import
+    state_rm:
+      steps:
+      - state_rm
 `,
 			exp: valid.RepoCfg{
 				Version: 3,
@@ -846,6 +805,20 @@ workflows:
 								},
 							},
 						},
+						Import: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName: "import",
+								},
+							},
+						},
+						StateRm: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName: "state_rm",
+								},
+							},
+						},
 					},
 				},
 			},
@@ -876,6 +849,14 @@ workflows:
       - plan:
           extra_args: [a, b]
       - apply:
+          extra_args: ["a", "b"]
+    import:
+      steps:
+      - import:
+          extra_args: ["a", "b"]
+    state_rm:
+      steps:
+      - state_rm:
           extra_args: ["a", "b"]
 `,
 			exp: valid.RepoCfg{
@@ -925,6 +906,22 @@ workflows:
 								},
 							},
 						},
+						Import: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:  "import",
+									ExtraArgs: []string{"a", "b"},
+								},
+							},
+						},
+						StateRm: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:  "state_rm",
+									ExtraArgs: []string{"a", "b"},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -946,6 +943,12 @@ workflows:
     apply:
       steps:
       - run: echo apply "arg 2"
+    import:
+      steps:
+      - run: echo apply "arg 3"
+    state_rm:
+      steps:
+      - run: echo apply "arg 4"
 `,
 			exp: valid.RepoCfg{
 				Version: 3,
@@ -986,6 +989,22 @@ workflows:
 								},
 							},
 						},
+						Import: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:   "run",
+									RunCommand: "echo apply \"arg 3\"",
+								},
+							},
+						},
+						StateRm: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:   "run",
+									RunCommand: "echo apply \"arg 4\"",
+								},
+							},
+						},
 					},
 				},
 			},
@@ -1013,6 +1032,16 @@ workflows:
       - env:
           name: env_name
           command: command and args
+    import:
+      steps:
+      - env:
+          name: env_name
+          value: env_value
+    state_rm:
+      steps:
+      - env:
+          name: env_name
+          value: env_value
 `,
 			exp: valid.RepoCfg{
 				Version: 3,
@@ -1056,14 +1085,31 @@ workflows:
 								},
 							},
 						},
+						Import: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:    "env",
+									EnvVarName:  "env_name",
+									EnvVarValue: "env_value",
+								},
+							},
+						},
+						StateRm: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:    "env",
+									EnvVarName:  "env_name",
+									EnvVarValue: "env_value",
+								},
+							},
+						},
 					},
 				},
 			},
 		},
 	}
 
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 
 	for _, c := range cases {
 		t.Run(c.description, func(t *testing.T) {
@@ -1071,7 +1117,7 @@ workflows:
 			Ok(t, err)
 
 			r := config.ParserValidator{}
-			act, err := r.ParseRepoCfg(tmpDir, globalCfg, "")
+			act, err := r.ParseRepoCfg(tmpDir, globalCfg, "", "")
 			if c.expErr != "" {
 				ErrEquals(t, c.expErr, err)
 				return
@@ -1085,8 +1131,7 @@ workflows:
 // Test that we fail if the global validation fails. We test global validation
 // more completely in GlobalCfg.ValidateRepoCfg().
 func TestParseRepoCfg_GlobalValidation(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 
 	repoCfg := `
 version: 3
@@ -1106,7 +1151,7 @@ workflows:
 		UnDivergedReq: false,
 	}
 
-	_, err = r.ParseRepoCfg(tmpDir, valid.NewGlobalCfgFromArgs(globalCfgArgs), "repo_id")
+	_, err = r.ParseRepoCfg(tmpDir, valid.NewGlobalCfgFromArgs(globalCfgArgs), "repo_id", "branch")
 	ErrEquals(t, "repo config not allowed to set 'workflow' key: server-side config needs 'allowed_overrides: [workflow]'", err)
 }
 
@@ -1186,6 +1231,28 @@ func TestParseGlobalCfg(t *testing.T) {
 				},
 			},
 		},
+		Import: valid.Stage{
+			Steps: []valid.Step{
+				{
+					StepName:   "run",
+					RunCommand: "custom command",
+				},
+				{
+					StepName: "import",
+				},
+			},
+		},
+		StateRm: valid.Stage{
+			Steps: []valid.Step{
+				{
+					StepName:   "run",
+					RunCommand: "custom command",
+				},
+				{
+					StepName: "state_rm",
+				},
+			},
+		},
 	}
 
 	conftestVersion, _ := version.NewVersion("v1.0.0")
@@ -1219,6 +1286,18 @@ func TestParseGlobalCfg(t *testing.T) {
   branch: /?/`,
 			expErr: "repos: (0: (branch: parsing: /?/: error parsing regexp: missing argument to repetition operator: `?`.).).",
 		},
+		"invalid repo_config_file which starts with a slash": {
+			input: `repos:
+- id: /.*/
+  repo_config_file: /etc/passwd`,
+			expErr: "repos: (0: (repo_config_file: must not starts with a slash '/'.).).",
+		},
+		"invalid repo_config_file which contains parent directory path": {
+			input: `repos:
+- id: /.*/
+  repo_config_file: ../../etc/passwd`,
+			expErr: "repos: (0: (repo_config_file: must not contains parent directory path like '../'.).).",
+		},
 		"workflow doesn't exist": {
 			input: `repos:
 - id: /.*/
@@ -1229,13 +1308,25 @@ func TestParseGlobalCfg(t *testing.T) {
 			input: `repos:
 - id: /.*/
   allowed_overrides: [invalid]`,
-			expErr: "repos: (0: (allowed_overrides: \"invalid\" is not a valid override, only \"apply_requirements\", \"workflow\" and \"delete_source_branch_on_merge\" are supported.).).",
+			expErr: "repos: (0: (allowed_overrides: \"invalid\" is not a valid override, only \"plan_requirements\", \"apply_requirements\", \"import_requirements\", \"workflow\", \"delete_source_branch_on_merge\" and \"repo_locking\" are supported.).).",
+		},
+		"invalid plan_requirement": {
+			input: `repos:
+- id: /.*/
+  plan_requirements: [invalid]`,
+			expErr: "repos: (0: (plan_requirements: \"invalid\" is not a valid plan_requirement, only \"approved\", \"mergeable\" and \"undiverged\" are supported.).).",
 		},
 		"invalid apply_requirement": {
 			input: `repos:
 - id: /.*/
   apply_requirements: [invalid]`,
 			expErr: "repos: (0: (apply_requirements: \"invalid\" is not a valid apply_requirement, only \"approved\", \"mergeable\" and \"undiverged\" are supported.).).",
+		},
+		"invalid import_requirement": {
+			input: `repos:
+- id: /.*/
+  import_requirements: [invalid]`,
+			expErr: "repos: (0: (import_requirements: \"invalid\" is not a valid import_requirement, only \"approved\", \"mergeable\" and \"undiverged\" are supported.).).",
 		},
 		"no workflows key": {
 			input: `repos: []`,
@@ -1253,12 +1344,7 @@ workflows:
 				Repos: defaultCfg.Repos,
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
-					"name": {
-						Name:        "name",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"name":    defaultWorkflow("name"),
 				},
 			},
 		},
@@ -1268,17 +1354,15 @@ workflows:
   name:
     apply:
     plan:
+    policy_check:
+    import:
+    state_rm:
 `,
 			exp: valid.GlobalCfg{
 				Repos: defaultCfg.Repos,
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
-					"name": {
-						Name:        "name",
-						Apply:       valid.DefaultApplyStage,
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-					},
+					"name":    defaultWorkflow("name"),
 				},
 			},
 		},
@@ -1289,17 +1373,19 @@ workflows:
     apply:
       steps:
     plan:
-      steps:`,
+      steps:
+    policy_check:
+      steps:
+    import:
+      steps:
+    state_rm:
+      steps:
+`,
 			exp: valid.GlobalCfg{
 				Repos: defaultCfg.Repos,
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
-					"name": {
-						Name:        "name",
-						Plan:        valid.DefaultPlanStage,
-						PolicyCheck: valid.DefaultPolicyCheckStage,
-						Apply:       valid.DefaultApplyStage,
-					},
+					"name":    defaultWorkflow("name"),
 				},
 			},
 		},
@@ -1307,14 +1393,14 @@ workflows:
 			input: `
 repos:
 - id: github.com/owner/repo
-
+  repo_config_file: "path/to/atlantis.yaml"
   apply_requirements: [approved, mergeable]
   pre_workflow_hooks:
     - run: custom workflow command
   workflow: custom1
   post_workflow_hooks:
     - run: custom workflow command
-  allowed_overrides: [apply_requirements, workflow, delete_source_branch_on_merge]
+  allowed_overrides: [plan_requirements, apply_requirements, import_requirements, workflow, delete_source_branch_on_merge]
   allow_custom_workflows: true
 - id: /.*/
   branch: /(master|main)/
@@ -1340,6 +1426,14 @@ workflows:
       steps:
       - run: custom command
       - apply
+    import:
+      steps:
+      - run: custom command
+      - import
+    state_rm:
+      steps:
+      - run: custom command
+      - state_rm
 policies:
   conftest_version: v1.0.0
   policy_sets:
@@ -1352,11 +1446,12 @@ policies:
 					defaultCfg.Repos[0],
 					{
 						ID:                   "github.com/owner/repo",
+						RepoConfigFile:       "path/to/atlantis.yaml",
 						ApplyRequirements:    []string{"approved", "mergeable"},
 						PreWorkflowHooks:     preWorkflowHooks,
 						Workflow:             &customWorkflow1,
 						PostWorkflowHooks:    postWorkflowHooks,
-						AllowedOverrides:     []string{"apply_requirements", "workflow", "delete_source_branch_on_merge"},
+						AllowedOverrides:     []string{"plan_requirements", "apply_requirements", "import_requirements", "workflow", "delete_source_branch_on_merge"},
 						AllowCustomWorkflows: Bool(true),
 					},
 					{
@@ -1371,12 +1466,14 @@ policies:
 					"custom1": customWorkflow1,
 				},
 				PolicySets: valid.PolicySets{
-					Version: conftestVersion,
+					Version:      conftestVersion,
+					ApproveCount: 1,
 					PolicySets: []valid.PolicySet{
 						{
-							Name:   "good-policy",
-							Path:   "rel/path/to/policy",
-							Source: valid.LocalPolicySet,
+							Name:         "good-policy",
+							Path:         "rel/path/to/policy",
+							Source:       valid.LocalPolicySet,
+							ApproveCount: 1,
 						},
 					},
 				},
@@ -1428,14 +1525,20 @@ workflows:
     policy_check:
       steps: []
     apply:
-     steps: []
+      steps: []
+    import:
+      steps: []
+    state_rm:
+      steps: []
 `,
 			exp: valid.GlobalCfg{
 				Repos: []valid.Repo{
 					{
-						IDRegex:           regexp.MustCompile(".*"),
-						BranchRegex:       regexp.MustCompile(".*"),
-						ApplyRequirements: []string{},
+						IDRegex:            regexp.MustCompile(".*"),
+						BranchRegex:        regexp.MustCompile(".*"),
+						PlanRequirements:   []string{},
+						ApplyRequirements:  []string{},
+						ImportRequirements: []string{},
 						Workflow: &valid.Workflow{
 							Name: "default",
 							Apply: valid.Stage{
@@ -1452,11 +1555,18 @@ workflows:
 									},
 								},
 							},
+							Import: valid.Stage{
+								Steps: nil,
+							},
+							StateRm: valid.Stage{
+								Steps: nil,
+							},
 						},
 						AllowedWorkflows:          []string{},
 						AllowedOverrides:          []string{},
 						AllowCustomWorkflows:      Bool(false),
 						DeleteSourceBranchOnMerge: Bool(false),
+						RepoLocking:               Bool(true),
 					},
 				},
 				Workflows: map[string]valid.Workflow{
@@ -1482,8 +1592,7 @@ workflows:
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := config.ParserValidator{}
-			tmp, cleanup := TempDir(t)
-			defer cleanup()
+			tmp := t.TempDir()
 			path := filepath.Join(tmp, "conf.yaml")
 			Ok(t, os.WriteFile(path, []byte(c.input), 0600))
 
@@ -1562,6 +1671,22 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 				},
 			},
 		},
+		Import: valid.Stage{
+			Steps: []valid.Step{
+				{
+					StepName:   "run",
+					RunCommand: "custom import",
+				},
+			},
+		},
+		StateRm: valid.Stage{
+			Steps: []valid.Step{
+				{
+					StepName:   "run",
+					RunCommand: "custom state_rm",
+				},
+			},
+		},
 	}
 
 	conftestVersion, _ := version.NewVersion("v1.0.0")
@@ -1619,6 +1744,16 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
         "steps": [
           {"run": "my custom command"}
         ]
+      },
+      "import": {
+        "steps": [
+          {"run": "custom import"}
+        ]
+      },
+      "state_rm": {
+        "steps": [
+          {"run": "custom state_rm"}
+        ]
       }
     }
   },
@@ -1668,12 +1803,14 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 					"custom": customWorkflow,
 				},
 				PolicySets: valid.PolicySets{
-					Version: conftestVersion,
+					Version:      conftestVersion,
+					ApproveCount: 1,
 					PolicySets: []valid.PolicySet{
 						{
-							Name:   "good-policy",
-							Path:   "rel/path/to/policy",
-							Source: valid.LocalPolicySet,
+							Name:         "good-policy",
+							Path:         "rel/path/to/policy",
+							Source:       valid.LocalPolicySet,
+							ApproveCount: 1,
 						},
 					},
 				},
@@ -1722,7 +1859,7 @@ func TestParseRepoCfg_V2ShellParsing(t *testing.T) {
 		},
 		{
 			in:       "echo 'a b",
-			expV2Err: "unable to parse \"echo 'a b\": EOF found when expecting closing quote.",
+			expV2Err: "unable to parse \"echo 'a b\": EOF found when expecting closing quote",
 		},
 		{
 			in:    `mkdir a/b/c || printf \'your main.tf file does not provide default region.\\ncheck\'`,
@@ -1732,10 +1869,8 @@ func TestParseRepoCfg_V2ShellParsing(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
-			v2Dir, cleanup2 := TempDir(t)
-			defer cleanup2()
-			v3Dir, cleanup3 := TempDir(t)
-			defer cleanup3()
+			v2Dir := t.TempDir()
+			v3Dir := t.TempDir()
 			v2Path := filepath.Join(v2Dir, "atlantis.yaml")
 			v3Path := filepath.Join(v3Dir, "atlantis.yaml")
 			cfg := fmt.Sprintf(`workflows:
@@ -1756,7 +1891,7 @@ func TestParseRepoCfg_V2ShellParsing(t *testing.T) {
 				ApprovedReq:   false,
 				UnDivergedReq: false,
 			}
-			v2Cfg, err := p.ParseRepoCfg(v2Dir, valid.NewGlobalCfgFromArgs(globalCfgArgs), "")
+			v2Cfg, err := p.ParseRepoCfg(v2Dir, valid.NewGlobalCfgFromArgs(globalCfgArgs), "", "")
 			if c.expV2Err != "" {
 				ErrEquals(t, c.expV2Err, err)
 			} else {
@@ -1770,7 +1905,7 @@ func TestParseRepoCfg_V2ShellParsing(t *testing.T) {
 				ApprovedReq:   false,
 				UnDivergedReq: false,
 			}
-			v3Cfg, err := p.ParseRepoCfg(v3Dir, valid.NewGlobalCfgFromArgs(globalCfgArgs), "")
+			v3Cfg, err := p.ParseRepoCfg(v3Dir, valid.NewGlobalCfgFromArgs(globalCfgArgs), "", "")
 			Ok(t, err)
 			Equals(t, c.in, v3Cfg.Workflows["custom"].Plan.Steps[0].RunCommand)
 			Equals(t, c.in, v3Cfg.Workflows["custom"].Apply.Steps[0].RunCommand)
@@ -1785,3 +1920,14 @@ func String(v string) *string { return &v }
 // Bool is a helper routine that allocates a new bool value
 // to store v and returns a pointer to it.
 func Bool(v bool) *bool { return &v }
+
+func defaultWorkflow(name string) valid.Workflow {
+	return valid.Workflow{
+		Name:        name,
+		Apply:       valid.DefaultApplyStage,
+		Plan:        valid.DefaultPlanStage,
+		PolicyCheck: valid.DefaultPolicyCheckStage,
+		Import:      valid.DefaultImportStage,
+		StateRm:     valid.DefaultStateRmStage,
+	}
+}

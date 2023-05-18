@@ -130,6 +130,10 @@ func (g *AzureDevopsClient) CreateComment(repo models.Repo, pullNum int, comment
 	return nil
 }
 
+func (g *AzureDevopsClient) ReactToComment(repo models.Repo, commentID int64, reaction string) error { //nolint: revive
+	return nil
+}
+
 func (g *AzureDevopsClient) HidePrevCommandComments(repo models.Repo, pullNum int, command string) error {
 	return nil
 }
@@ -164,6 +168,11 @@ func (g *AzureDevopsClient) PullIsApproved(repo models.Repo, pull models.PullReq
 	}
 
 	return approvalStatus, nil
+}
+
+func (g *AzureDevopsClient) DiscardReviews(repo models.Repo, pull models.PullRequest) error {
+	// TODO implement
+	return nil
 }
 
 // PullIsMergeable returns true if the merge request can be merged.
@@ -306,7 +315,7 @@ func (g *AzureDevopsClient) MergePull(pull models.PullRequest, pullOptions model
 		return fmt.Errorf("the user %s is not found in the organization %s", g.UserName, owner)
 	}
 
-	imageURL := "https://github.com/runatlantis/atlantis/raw/master/runatlantis.io/.vuepress/public/hero.png"
+	imageURL := "https://github.com/runatlantis/atlantis/raw/main/runatlantis.io/.vuepress/public/hero.png"
 	id := azuredevops.IdentityRef{
 		Descriptor: &descriptor,
 		ID:         userID,
@@ -320,7 +329,7 @@ func (g *AzureDevopsClient) MergePull(pull models.PullRequest, pullOptions model
 		BypassPolicy:            new(bool),
 		BypassReason:            azuredevops.String(""),
 		DeleteSourceBranch:      &pullOptions.DeleteSourceBranchOnMerge,
-		MergeCommitMessage:      azuredevops.String(common.AutomergeCommitMsg),
+		MergeCommitMessage:      azuredevops.String(common.AutomergeCommitMsg(pull.Num)),
 		MergeStrategy:           &mcm,
 		SquashMerge:             new(bool),
 		TransitionWorkItems:     twi,
@@ -362,8 +371,9 @@ func (g *AzureDevopsClient) MarkdownPullLink(pull models.PullRequest) (string, e
 // repoFullName format owner/project/repo.
 //
 // Ex. runatlantis/atlantis => (runatlantis, atlantis)
-//     gitlab/subgroup/runatlantis/atlantis => (gitlab/subgroup/runatlantis, atlantis)
-//     azuredevops/project/atlantis => (azuredevops, project, atlantis)
+//
+//	gitlab/subgroup/runatlantis/atlantis => (gitlab/subgroup/runatlantis, atlantis)
+//	azuredevops/project/atlantis => (azuredevops, project, atlantis)
 func SplitAzureDevopsRepoFullName(repoFullName string) (owner string, project string, repo string) {
 	firstSlashIdx := strings.Index(repoFullName, "/")
 	lastSlashIdx := strings.LastIndex(repoFullName, "/")
@@ -388,7 +398,7 @@ func (g *AzureDevopsClient) SupportsSingleFileDownload(repo models.Repo) bool {
 	return false
 }
 
-func (g *AzureDevopsClient) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
+func (g *AzureDevopsClient) GetFileContent(pull models.PullRequest, fileName string) (bool, []byte, error) {
 	return false, []byte{}, fmt.Errorf("Not Implemented")
 }
 

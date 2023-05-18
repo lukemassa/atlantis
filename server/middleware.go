@@ -15,9 +15,10 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/runatlantis/atlantis/server/logging"
-	"github.com/urfave/negroni"
+	"github.com/urfave/negroni/v3"
 )
 
 // NewRequestLogger creates a RequestLogger.
@@ -46,7 +47,8 @@ func (l *RequestLogger) ServeHTTP(rw http.ResponseWriter, r *http.Request, next 
 	if !l.WebAuthentication ||
 		r.URL.Path == "/events" ||
 		r.URL.Path == "/healthz" ||
-		r.URL.Path == "/status" {
+		r.URL.Path == "/status" ||
+		strings.HasPrefix(r.URL.Path, "/api/") {
 		allowed = true
 	} else {
 		user, pass, ok := r.BasicAuth()

@@ -64,8 +64,16 @@ func (d *ClientProxy) HidePrevCommandComments(repo models.Repo, pullNum int, com
 	return d.clients[repo.VCSHost.Type].HidePrevCommandComments(repo, pullNum, command)
 }
 
+func (d *ClientProxy) ReactToComment(repo models.Repo, commentID int64, reaction string) error {
+	return d.clients[repo.VCSHost.Type].ReactToComment(repo, commentID, reaction)
+}
+
 func (d *ClientProxy) PullIsApproved(repo models.Repo, pull models.PullRequest) (models.ApprovalStatus, error) {
 	return d.clients[repo.VCSHost.Type].PullIsApproved(repo, pull)
+}
+
+func (d *ClientProxy) DiscardReviews(repo models.Repo, pull models.PullRequest) error {
+	return d.clients[repo.VCSHost.Type].DiscardReviews(repo, pull)
 }
 
 func (d *ClientProxy) PullIsMergeable(repo models.Repo, pull models.PullRequest, vcsstatusname string) (bool, error) {
@@ -88,8 +96,8 @@ func (d *ClientProxy) GetTeamNamesForUser(repo models.Repo, user models.User) ([
 	return d.clients[repo.VCSHost.Type].GetTeamNamesForUser(repo, user)
 }
 
-func (d *ClientProxy) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
-	return d.clients[pull.BaseRepo.VCSHost.Type].DownloadRepoConfigFile(pull)
+func (d *ClientProxy) GetFileContent(pull models.PullRequest, fileName string) (bool, []byte, error) {
+	return d.clients[pull.BaseRepo.VCSHost.Type].GetFileContent(pull, fileName)
 }
 
 func (d *ClientProxy) SupportsSingleFileDownload(repo models.Repo) bool {

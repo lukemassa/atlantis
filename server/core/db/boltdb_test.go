@@ -432,8 +432,7 @@ func TestGetLock(t *testing.T) {
 
 // Test we can create a status and then getCommandLock it.
 func TestPullStatus_UpdateGet(t *testing.T) {
-	b, cleanup := newTestDB2(t)
-	defer cleanup()
+	b := newTestDB2(t)
 
 	pull := models.PullRequest{
 		Num:        1,
@@ -483,8 +482,7 @@ func TestPullStatus_UpdateGet(t *testing.T) {
 // Test we can create a status, delete it, and then we shouldn't be able to getCommandLock
 // it.
 func TestPullStatus_UpdateDeleteGet(t *testing.T) {
-	b, cleanup := newTestDB2(t)
-	defer cleanup()
+	b := newTestDB2(t)
 
 	pull := models.PullRequest{
 		Num:        1,
@@ -529,8 +527,7 @@ func TestPullStatus_UpdateDeleteGet(t *testing.T) {
 // pull status, and when we getCommandLock all the project statuses, that specific project
 // should be updated.
 func TestPullStatus_UpdateProject(t *testing.T) {
-	b, cleanup := newTestDB2(t)
-	defer cleanup()
+	b := newTestDB2(t)
 
 	pull := models.PullRequest{
 		Num:        1,
@@ -593,8 +590,7 @@ func TestPullStatus_UpdateProject(t *testing.T) {
 // Test that if we update an existing pull status and our new status is for a
 // different HeadSHA, that we just overwrite the old status.
 func TestPullStatus_UpdateNewCommit(t *testing.T) {
-	b, cleanup := newTestDB2(t)
-	defer cleanup()
+	b := newTestDB2(t)
 
 	pull := models.PullRequest{
 		Num:        1,
@@ -653,11 +649,10 @@ func TestPullStatus_UpdateNewCommit(t *testing.T) {
 	}, maybeStatus.Projects)
 }
 
-// Test that if we update an existing pull status and our new status is for a
+// Test that if we update an existing pull status via Apply and our new status is for a
 // the same commit, that we merge the statuses.
-func TestPullStatus_UpdateMerge(t *testing.T) {
-	b, cleanup := newTestDB2(t)
-	defer cleanup()
+func TestPullStatus_UpdateMerge_Apply(t *testing.T) {
+	b := newTestDB2(t)
 
 	pull := models.PullRequest{
 		Num:        1,
@@ -766,6 +761,120 @@ func TestPullStatus_UpdateMerge(t *testing.T) {
 	}
 }
 
+// Test that if we update one existing policy status via approve_policies and our new status is for a
+// the same commit, that we merge the statuses.
+func TestPullStatus_UpdateMerge_ApprovePolicies(t *testing.T) {
+	b := newTestDB2(t)
+
+	pull := models.PullRequest{
+		Num:        1,
+		HeadCommit: "sha",
+		URL:        "url",
+		HeadBranch: "head",
+		BaseBranch: "base",
+		Author:     "lkysow",
+		State:      models.OpenPullState,
+		BaseRepo: models.Repo{
+			FullName:          "runatlantis/atlantis",
+			Owner:             "runatlantis",
+			Name:              "atlantis",
+			CloneURL:          "clone-url",
+			SanitizedCloneURL: "clone-url",
+			VCSHost: models.VCSHost{
+				Hostname: "github.com",
+				Type:     models.Github,
+			},
+		},
+	}
+	_, err := b.UpdatePullWithResults(
+		pull,
+		[]command.ProjectResult{
+			{
+				Command:    command.PolicyCheck,
+				RepoRelDir: "mergeme",
+				Workspace:  "default",
+				Failure:    "policy failure",
+				PolicyCheckResults: &models.PolicyCheckResults{
+					PolicySetResults: []models.PolicySetResult{
+						{
+							PolicySetName: "policy1",
+							ReqApprovals:  1,
+						},
+					},
+				},
+			},
+			{
+				Command:     command.PolicyCheck,
+				RepoRelDir:  "projectname",
+				Workspace:   "default",
+				ProjectName: "projectname",
+				Failure:     "policy failure",
+				PolicyCheckResults: &models.PolicyCheckResults{
+					PolicySetResults: []models.PolicySetResult{
+						{
+							PolicySetName: "policy1",
+							ReqApprovals:  1,
+						},
+					},
+				},
+			},
+		})
+	Ok(t, err)
+
+	updateStatus, err := b.UpdatePullWithResults(pull,
+		[]command.ProjectResult{
+			{
+				Command:    command.ApprovePolicies,
+				RepoRelDir: "mergeme",
+				Workspace:  "default",
+				PolicyCheckResults: &models.PolicyCheckResults{
+					PolicySetResults: []models.PolicySetResult{
+						{
+							PolicySetName: "policy1",
+							ReqApprovals:  1,
+							CurApprovals:  1,
+						},
+					},
+				},
+			},
+		})
+	Ok(t, err)
+
+	getStatus, err := b.GetPullStatus(pull)
+	Ok(t, err)
+
+	// Test both the pull state returned from the update call *and* the getCommandLock
+	// call.
+	for _, s := range []models.PullStatus{updateStatus, *getStatus} {
+		Equals(t, pull, s.Pull)
+		Equals(t, []models.ProjectStatus{
+			{
+				RepoRelDir: "mergeme",
+				Workspace:  "default",
+				Status:     models.PassedPolicyCheckStatus,
+				PolicyStatus: []models.PolicySetStatus{
+					{
+						PolicySetName: "policy1",
+						Approvals:     1,
+					},
+				},
+			},
+			{
+				RepoRelDir:  "projectname",
+				Workspace:   "default",
+				ProjectName: "projectname",
+				Status:      models.ErroredPolicyCheckStatus,
+				PolicyStatus: []models.PolicySetStatus{
+					{
+						PolicySetName: "policy1",
+						Approvals:     0,
+					},
+				},
+			},
+		}, updateStatus.Projects)
+	}
+}
+
 // newTestDB returns a TestDB using a temporary path.
 func newTestDB() (*bolt.DB, *db.BoltDB) {
 	// Retrieve a temporary path.
@@ -796,13 +905,11 @@ func newTestDB() (*bolt.DB, *db.BoltDB) {
 	return boltDB, b
 }
 
-func newTestDB2(t *testing.T) (*db.BoltDB, func()) {
-	tmp, cleanup := TempDir(t)
+func newTestDB2(t *testing.T) *db.BoltDB {
+	tmp := t.TempDir()
 	boltDB, err := db.New(tmp)
 	Ok(t, err)
-	return boltDB, func() {
-		cleanup()
-	}
+	return boltDB
 }
 
 func cleanupDB(db *bolt.DB) {

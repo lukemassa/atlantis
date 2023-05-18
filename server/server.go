@@ -17,6 +17,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -32,14 +33,17 @@ import (
 	"time"
 
 	"github.com/mitchellh/go-homedir"
+	"github.com/uber-go/tally"
+	"github.com/uber-go/tally/prometheus"
+	"github.com/urfave/negroni/v3"
+
 	cfg "github.com/runatlantis/atlantis/server/core/config"
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	"github.com/runatlantis/atlantis/server/core/db"
+	"github.com/runatlantis/atlantis/server/core/redis"
 	"github.com/runatlantis/atlantis/server/jobs"
 	"github.com/runatlantis/atlantis/server/metrics"
 	"github.com/runatlantis/atlantis/server/scheduled"
-	"github.com/uber-go/tally"
-	"github.com/uber-go/tally/prometheus"
 
 	assetfs "github.com/elazarl/go-bindata-assetfs"
 	"github.com/gorilla/mux"
@@ -61,8 +65,6 @@ import (
 	"github.com/runatlantis/atlantis/server/events/webhooks"
 	"github.com/runatlantis/atlantis/server/logging"
 	"github.com/runatlantis/atlantis/server/static"
-	"github.com/urfave/cli"
-	"github.com/urfave/negroni"
 )
 
 const (
@@ -111,6 +113,9 @@ type Server struct {
 	ProjectJobsErrorTemplate       templates.TemplateWriter
 	SSLCertFile                    string
 	SSLKeyFile                     string
+	CertLastRefreshTime            time.Time
+	KeyLastRefreshTime             time.Time
+	SSLCert                        *tls.Certificate
 	Drainer                        *events.Drainer
 	WebAuthentication              bool
 	WebUsername                    string
@@ -148,6 +153,7 @@ type WebhookConfig struct {
 // its dependencies an error will be returned. This is like the main() function
 // for the server CLI command because it injects all the dependencies.
 func NewServer(userConfig UserConfig, config Config) (*Server, error) {
+	logging.SuppressDefaultLogging()
 	logger, err := logging.NewStructuredLoggerFromLevel(userConfig.ToLogLevel())
 
 	if err != nil {
@@ -157,6 +163,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	var supportedVCSHosts []models.VCSHostType
 	var githubClient vcs.IGithubClient
 	var githubAppEnabled bool
+	var githubConfig vcs.GithubConfig
 	var githubCredentials vcs.GithubCredentials
 	var gitlabClient *vcs.GitlabClient
 	var bitbucketCloudClient *bitbucketcloud.Client
@@ -167,6 +174,18 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	if userConfig.EnablePolicyChecksFlag {
 		logger.Info("Policy Checks are enabled")
 		policyChecksEnabled = true
+	}
+
+	allowCommands, err := userConfig.ToAllowCommandNames()
+	if err != nil {
+		return nil, err
+	}
+	disableApply := true
+	for _, allowCommand := range allowCommands {
+		if allowCommand == command.Apply {
+			disableApply = false
+			break
+		}
 	}
 
 	validator := &cfg.ParserValidator{}
@@ -198,6 +217,11 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 
 	if userConfig.GithubUser != "" || userConfig.GithubAppID != 0 {
+		if userConfig.GithubAllowMergeableBypassApply {
+			githubConfig = vcs.GithubConfig{
+				AllowMergeableBypassApply: true,
+			}
+		}
 		supportedVCSHosts = append(supportedVCSHosts, models.Github)
 		if userConfig.GithubUser != "" {
 			githubCredentials = &vcs.GithubUserCredentials{
@@ -227,7 +251,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		}
 
 		var err error
-		rawGithubClient, err := vcs.NewGithubClient(userConfig.GithubHostname, githubCredentials, logger)
+		rawGithubClient, err := vcs.NewGithubClient(userConfig.GithubHostname, githubCredentials, githubConfig, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -274,18 +298,19 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		}
 	}
 
+	home, err := homedir.Dir()
+	if err != nil {
+		return nil, errors.Wrap(err, "getting home dir to write ~/.git-credentials file")
+	}
+
 	if userConfig.WriteGitCreds {
-		home, err := homedir.Dir()
-		if err != nil {
-			return nil, errors.Wrap(err, "getting home dir to write ~/.git-credentials file")
-		}
 		if userConfig.GithubUser != "" {
-			if err := events.WriteGitCreds(userConfig.GithubUser, userConfig.GithubToken, userConfig.GithubHostname, home, logger, false); err != nil {
+			if err := vcs.WriteGitCreds(userConfig.GithubUser, userConfig.GithubToken, userConfig.GithubHostname, home, logger, false); err != nil {
 				return nil, err
 			}
 		}
 		if userConfig.GitlabUser != "" {
-			if err := events.WriteGitCreds(userConfig.GitlabUser, userConfig.GitlabToken, userConfig.GitlabHostname, home, logger, false); err != nil {
+			if err := vcs.WriteGitCreds(userConfig.GitlabUser, userConfig.GitlabToken, userConfig.GitlabHostname, home, logger, false); err != nil {
 				return nil, err
 			}
 		}
@@ -296,15 +321,21 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			if bitbucketBaseURL == "https://api.bitbucket.org" {
 				bitbucketBaseURL = "bitbucket.org"
 			}
-			if err := events.WriteGitCreds(userConfig.BitbucketUser, userConfig.BitbucketToken, bitbucketBaseURL, home, logger, false); err != nil {
+			if err := vcs.WriteGitCreds(userConfig.BitbucketUser, userConfig.BitbucketToken, bitbucketBaseURL, home, logger, false); err != nil {
 				return nil, err
 			}
 		}
 		if userConfig.AzureDevopsUser != "" {
-			if err := events.WriteGitCreds(userConfig.AzureDevopsUser, userConfig.AzureDevopsToken, "dev.azure.com", home, logger, false); err != nil {
+			if err := vcs.WriteGitCreds(userConfig.AzureDevopsUser, userConfig.AzureDevopsToken, "dev.azure.com", home, logger, false); err != nil {
 				return nil, err
 			}
 		}
+	}
+
+	// default the project files used to generate the module index to the autoplan-file-list if autoplan-modules is true
+	// but no files are specified
+	if userConfig.AutoplanModules && userConfig.AutoplanModulesFromProjects == "" {
+		userConfig.AutoplanModulesFromProjects = userConfig.AutoplanFileList
 	}
 
 	var webhooksConfig []webhooks.Config
@@ -374,6 +405,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		config.DefaultTFVersionFlag,
 		userConfig.TFDownloadURL,
 		&terraform.DefaultDownloader{},
+		userConfig.TFDownload,
 		true,
 		projectCmdOutputHandler)
 	// The flag.Lookup call is to detect if we're running in a unit test. If we
@@ -382,34 +414,60 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	if err != nil && flag.Lookup("test.v") == nil {
 		return nil, errors.Wrap(err, "initializing terraform")
 	}
-	markdownRenderer := &events.MarkdownRenderer{
-		GitlabSupportsCommonMark: gitlabClient.SupportsCommonMark(),
-		DisableApplyAll:          userConfig.DisableApplyAll,
-		DisableMarkdownFolding:   userConfig.DisableMarkdownFolding,
-		DisableApply:             userConfig.DisableApply,
-		DisableRepoLocking:       userConfig.DisableRepoLocking,
-		EnableDiffMarkdownFormat: userConfig.EnableDiffMarkdownFormat,
-	}
+	markdownRenderer := events.NewMarkdownRenderer(
+		gitlabClient.SupportsCommonMark(),
+		userConfig.DisableApplyAll,
+		disableApply,
+		userConfig.DisableMarkdownFolding,
+		userConfig.DisableRepoLocking,
+		userConfig.EnableDiffMarkdownFormat,
+		userConfig.MarkdownTemplateOverridesDir,
+		userConfig.ExecutableName,
+		userConfig.HideUnchangedPlanComments,
+	)
 
-	boltdb, err := db.New(userConfig.DataDir)
-	if err != nil {
-		return nil, err
-	}
 	var lockingClient locking.Locker
 	var applyLockingClient locking.ApplyLocker
-	if userConfig.DisableRepoLocking {
-		lockingClient = locking.NewNoOpLocker()
-	} else {
-		lockingClient = locking.NewClient(boltdb)
+	var backend locking.Backend
+
+	switch dbtype := userConfig.LockingDBType; dbtype {
+	case "redis":
+		logger.Info("Utilizing Redis DB")
+		backend, err = redis.New(userConfig.RedisHost, userConfig.RedisPort, userConfig.RedisPassword, userConfig.RedisTLSEnabled, userConfig.RedisInsecureSkipVerify, userConfig.RedisDB)
+		if err != nil {
+			return nil, err
+		}
+	case "boltdb":
+		logger.Info("Utilizing BoltDB")
+		backend, err = db.New(userConfig.DataDir)
+		if err != nil {
+			return nil, err
+		}
 	}
-	applyLockingClient = locking.NewApplyClient(boltdb, userConfig.DisableApply)
+
+	noOpLocker := locking.NewNoOpLocker()
+	if userConfig.DisableRepoLocking {
+		logger.Info("Repo Locking is disabled")
+		lockingClient = noOpLocker
+	} else {
+		lockingClient = locking.NewClient(backend)
+	}
+
+	applyLockingClient = locking.NewApplyClient(backend, disableApply)
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
 
 	var workingDir events.WorkingDir = &events.FileWorkspace{
 		DataDir:          userConfig.DataDir,
 		CheckoutMerge:    userConfig.CheckoutStrategy == "merge",
+		CheckoutDepth:    userConfig.CheckoutDepth,
 		GithubAppEnabled: githubAppEnabled,
 	}
+
+	scheduledExecutorService := scheduled.NewExecutorService(
+		statsScope,
+		logger,
+	)
+
 	// provide fresh tokens before clone from the GitHub Apps integration, proxy workingDir
 	if githubAppEnabled {
 		if !userConfig.WriteGitCreds {
@@ -420,18 +478,26 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			Credentials:    githubCredentials,
 			GithubHostname: userConfig.GithubHostname,
 		}
+
+		githubAppTokenRotator := vcs.NewGithubAppTokenRotator(logger, githubCredentials, userConfig.GithubHostname, home)
+		tokenJd, err := githubAppTokenRotator.GenerateJob()
+		if err != nil {
+			return nil, errors.Wrap(err, "could not write credentials")
+		}
+		scheduledExecutorService.AddJob(tokenJd)
 	}
 
 	projectLocker := &events.DefaultProjectLocker{
-		Locker:    lockingClient,
-		VCSClient: vcsClient,
+		Locker:     lockingClient,
+		NoOpLocker: noOpLocker,
+		VCSClient:  vcsClient,
 	}
 	deleteLockCommand := &events.DefaultDeleteLockCommand{
 		Locker:           lockingClient,
 		Logger:           logger,
 		WorkingDir:       workingDir,
 		WorkingDirLocker: workingDirLocker,
-		DB:               boltdb,
+		Backend:          backend,
 	}
 
 	pullClosedExecutor := events.NewInstrumentedPullClosedExecutor(
@@ -441,7 +507,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			Locker:                   lockingClient,
 			WorkingDir:               workingDir,
 			Logger:                   logger,
-			DB:                       boltdb,
+			Backend:                  backend,
 			PullClosedTemplate:       &events.PullClosedEventTemplate{},
 			LogStreamResourceCleaner: projectCmdOutputHandler,
 			VCSClient:                vcsClient,
@@ -459,13 +525,14 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		AzureDevopsUser:    userConfig.AzureDevopsUser,
 		AzureDevopsToken:   userConfig.AzureDevopsToken,
 	}
-	commentParser := &events.CommentParser{
-		GithubUser:      userConfig.GithubUser,
-		GitlabUser:      userConfig.GitlabUser,
-		BitbucketUser:   userConfig.BitbucketUser,
-		AzureDevopsUser: userConfig.AzureDevopsUser,
-		ApplyDisabled:   userConfig.DisableApply,
-	}
+	commentParser := events.NewCommentParser(
+		userConfig.GithubUser,
+		userConfig.GitlabUser,
+		userConfig.BitbucketUser,
+		userConfig.AzureDevopsUser,
+		userConfig.ExecutableName,
+		allowCommands,
+	)
 	defaultTfVersion := terraformClient.DefaultVersion()
 	pendingPlanFinder := &events.DefaultPendingPlanFinder{}
 	runStepRunner := &runtime.RunStepRunner{
@@ -481,18 +548,26 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		AtlantisVersion: config.AtlantisVersion,
 	}
 	preWorkflowHooksCommandRunner := &events.DefaultPreWorkflowHooksCommandRunner{
-		VCSClient:             vcsClient,
-		GlobalCfg:             globalCfg,
-		WorkingDirLocker:      workingDirLocker,
-		WorkingDir:            workingDir,
-		PreWorkflowHookRunner: runtime.DefaultPreWorkflowHookRunner{},
+		VCSClient:        vcsClient,
+		GlobalCfg:        globalCfg,
+		WorkingDirLocker: workingDirLocker,
+		WorkingDir:       workingDir,
+		PreWorkflowHookRunner: runtime.DefaultPreWorkflowHookRunner{
+			OutputHandler: projectCmdOutputHandler,
+		},
+		CommitStatusUpdater: commitStatusUpdater,
+		Router:              router,
 	}
 	postWorkflowHooksCommandRunner := &events.DefaultPostWorkflowHooksCommandRunner{
-		VCSClient:              vcsClient,
-		GlobalCfg:              globalCfg,
-		WorkingDirLocker:       workingDirLocker,
-		WorkingDir:             workingDir,
-		PostWorkflowHookRunner: runtime.DefaultPostWorkflowHookRunner{},
+		VCSClient:        vcsClient,
+		GlobalCfg:        globalCfg,
+		WorkingDirLocker: workingDirLocker,
+		WorkingDir:       workingDir,
+		PostWorkflowHookRunner: runtime.DefaultPostWorkflowHookRunner{
+			OutputHandler: projectCmdOutputHandler,
+		},
+		CommitStatusUpdater: commitStatusUpdater,
+		Router:              router,
 	}
 	projectCommandBuilder := events.NewInstrumentedProjectCommandBuilder(
 		policyChecksEnabled,
@@ -506,9 +581,13 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		commentParser,
 		userConfig.SkipCloneNoChanges,
 		userConfig.EnableRegExpCmd,
+		userConfig.AutoplanModulesFromProjects,
 		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.SilenceNoProjects,
 		statsScope,
 		logger,
+		terraformClient,
 	)
 
 	showStepRunner, err := runtime.NewShowStepRunner(terraformClient, defaultTfVersion)
@@ -517,34 +596,30 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		return nil, errors.Wrap(err, "initializing show step runner")
 	}
 
-	policyCheckRunner, err := runtime.NewPolicyCheckStepRunner(
+	policyCheckStepRunner, err := runtime.NewPolicyCheckStepRunner(
 		defaultTfVersion,
 		policy.NewConfTestExecutorWorkflow(logger, binDir, &terraform.DefaultDownloader{}),
 	)
 
 	if err != nil {
-		return nil, errors.Wrap(err, "initializing policy check runner")
+		return nil, errors.Wrap(err, "initializing policy check step runner")
 	}
 
-	applyRequirementHandler := &events.AggregateApplyRequirements{
+	applyRequirementHandler := &events.DefaultCommandRequirementHandler{
 		WorkingDir: workingDir,
 	}
 
 	projectCommandRunner := &events.DefaultProjectCommandRunner{
+		VcsClient:        vcsClient,
 		Locker:           projectLocker,
 		LockURLGenerator: router,
 		InitStepRunner: &runtime.InitStepRunner{
 			TerraformExecutor: terraformClient,
 			DefaultTFVersion:  defaultTfVersion,
 		},
-		PlanStepRunner: &runtime.PlanStepRunner{
-			TerraformExecutor:   terraformClient,
-			DefaultTFVersion:    defaultTfVersion,
-			CommitStatusUpdater: commitStatusUpdater,
-			AsyncTFExec:         terraformClient,
-		},
+		PlanStepRunner:        runtime.NewPlanStepRunner(terraformClient, defaultTfVersion, commitStatusUpdater, terraformClient),
 		ShowStepRunner:        showStepRunner,
-		PolicyCheckStepRunner: policyCheckRunner,
+		PolicyCheckStepRunner: policyCheckStepRunner,
 		ApplyStepRunner: &runtime.ApplyStepRunner{
 			TerraformExecutor:   terraformClient,
 			DefaultTFVersion:    defaultTfVersion,
@@ -562,14 +637,16 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			TerraformExecutor: terraformClient,
 			DefaultTFVersion:  defaultTfVersion,
 		},
-		WorkingDir:                 workingDir,
-		Webhooks:                   webhooksManager,
-		WorkingDirLocker:           workingDirLocker,
-		AggregateApplyRequirements: applyRequirementHandler,
+		ImportStepRunner:          runtime.NewImportStepRunner(terraformClient, defaultTfVersion),
+		StateRmStepRunner:         runtime.NewStateRmStepRunner(terraformClient, defaultTfVersion),
+		WorkingDir:                workingDir,
+		Webhooks:                  webhooksManager,
+		WorkingDirLocker:          workingDirLocker,
+		CommandRequirementHandler: applyRequirementHandler,
 	}
 
 	dbUpdater := &events.DBUpdater{
-		DB: boltdb,
+		Backend: backend,
 	}
 
 	pullUpdater := &events.PullUpdater{
@@ -588,9 +665,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		ProjectCommandRunner: projectCommandRunner,
 		JobURLSetter:         jobs.NewJobURLSetter(router, commitStatusUpdater),
 	}
-	instrumentedProjectCmdRunner := &events.InstrumentedProjectCommandRunner{
-		ProjectCommandRunner: projectOutputWrapper,
-	}
+	instrumentedProjectCmdRunner := events.NewInstrumentedProjectCommandRunner(
+		statsScope,
+		projectOutputWrapper,
+	)
 
 	policyCheckCommandRunner := events.NewPolicyCheckCommandRunner(
 		dbUpdater,
@@ -599,8 +677,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		instrumentedProjectCmdRunner,
 		userConfig.ParallelPoolSize,
 		userConfig.SilenceVCSStatusNoProjects,
+		userConfig.QuietPolicyChecks,
 	)
 
+	pullReqStatusFetcher := vcs.NewPullReqStatusFetcher(vcsClient, userConfig.VCSStatusName)
 	planCommandRunner := events.NewPlanCommandRunner(
 		userConfig.SilenceVCSStatusNoPlans,
 		userConfig.SilenceVCSStatusNoProjects,
@@ -616,10 +696,12 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		autoMerger,
 		userConfig.ParallelPoolSize,
 		userConfig.SilenceNoProjects,
-		boltdb,
+		backend,
+		lockingClient,
+		userConfig.DiscardApprovalOnPlanFlag,
+		pullReqStatusFetcher,
 	)
 
-	pullReqStatusFetcher := vcs.NewPullReqStatusFetcher(vcsClient)
 	applyCommandRunner := events.NewApplyCommandRunner(
 		vcsClient,
 		userConfig.DisableApplyAll,
@@ -630,11 +712,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		autoMerger,
 		pullUpdater,
 		dbUpdater,
-		boltdb,
+		backend,
 		userConfig.ParallelPoolSize,
 		userConfig.SilenceNoProjects,
 		userConfig.SilenceVCSStatusNoProjects,
-		userConfig.VCSStatusName,
 		pullReqStatusFetcher,
 	)
 
@@ -646,6 +727,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		dbUpdater,
 		userConfig.SilenceNoProjects,
 		userConfig.SilenceVCSStatusNoPlans,
+		vcsClient,
 	)
 
 	unlockCommandRunner := events.NewUnlockCommandRunner(
@@ -662,12 +744,28 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		userConfig.SilenceNoProjects,
 	)
 
+	importCommandRunner := events.NewImportCommandRunner(
+		pullUpdater,
+		pullReqStatusFetcher,
+		projectCommandBuilder,
+		instrumentedProjectCmdRunner,
+		userConfig.SilenceNoProjects,
+	)
+
+	stateCommandRunner := events.NewStateCommandRunner(
+		pullUpdater,
+		projectCommandBuilder,
+		instrumentedProjectCmdRunner,
+	)
+
 	commentCommandRunnerByCmd := map[command.Name]events.CommentCommandRunner{
 		command.Plan:            planCommandRunner,
 		command.Apply:           applyCommandRunner,
 		command.ApprovePolicies: approvePoliciesCommandRunner,
 		command.Unlock:          unlockCommandRunner,
 		command.Version:         versionCommandRunner,
+		command.Import:          importCommandRunner,
+		command.State:           stateCommandRunner,
 	}
 
 	githubTeamAllowlistChecker, err := events.NewTeamAllowlistChecker(userConfig.GithubTeamAllowlist)
@@ -680,7 +778,6 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 
 	commandRunner := &events.DefaultCommandRunner{
-		VCSClient:                      vcsClient,
 		GithubPullGetter:               githubClient,
 		GitlabMergeRequestGetter:       gitlabClient,
 		AzureDevopsPullGetter:          azuredevopsClient,
@@ -697,7 +794,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		Drainer:                        drainer,
 		PreWorkflowHooksCommandRunner:  preWorkflowHooksCommandRunner,
 		PostWorkflowHooksCommandRunner: postWorkflowHooksCommandRunner,
-		PullStatusFetcher:              boltdb,
+		PullStatusFetcher:              backend,
 		TeamAllowlistChecker:           githubTeamAllowlistChecker,
 		VarFileAllowlistChecker:        varFileAllowlistChecker,
 	}
@@ -715,7 +812,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		LockDetailTemplate: templates.LockTemplate,
 		WorkingDir:         workingDir,
 		WorkingDirLocker:   workingDirLocker,
-		DB:                 boltdb,
+		Backend:            backend,
 		DeleteLockCommand:  deleteLockCommand,
 	}
 
@@ -723,6 +820,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		logger,
 		controllers.JobIDKeyGenerator{},
 		projectCmdOutputHandler,
+		userConfig.WebsocketCheckOrigin,
 	)
 
 	jobsController := &controllers.JobsController{
@@ -731,7 +829,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		Logger:                   logger,
 		ProjectJobsTemplate:      templates.ProjectJobsTemplate,
 		ProjectJobsErrorTemplate: templates.ProjectJobsErrorTemplate,
-		Db:                       boltdb,
+		Backend:                  backend,
 		WsMux:                    wsMux,
 		KeyGenerator:             controllers.JobIDKeyGenerator{},
 		StatsScope:               statsScope.SubScope("api"),
@@ -756,13 +854,15 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		CommentParser:                   commentParser,
 		Logger:                          logger,
 		Scope:                           statsScope,
-		ApplyDisabled:                   userConfig.DisableApply,
+		ApplyDisabled:                   disableApply,
 		GithubWebhookSecret:             []byte(userConfig.GithubWebhookSecret),
 		GithubRequestValidator:          &events_controllers.DefaultGithubRequestValidator{},
 		GitlabRequestParserValidator:    &events_controllers.DefaultGitlabRequestParserValidator{},
 		GitlabWebhookSecret:             []byte(userConfig.GitlabWebhookSecret),
 		RepoAllowlistChecker:            repoAllowlist,
 		SilenceAllowlistErrors:          userConfig.SilenceAllowlistErrors,
+		EmojiReaction:                   userConfig.EmojiReaction,
+		ExecutableName:                  userConfig.ExecutableName,
 		SupportedVCSHosts:               supportedVCSHosts,
 		VCSClient:                       vcsClient,
 		BitbucketWebhookSecret:          []byte(userConfig.BitbucketWebhookSecret),
@@ -777,10 +877,6 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		GithubHostname:      userConfig.GithubHostname,
 		GithubOrg:           userConfig.GithubOrg,
 	}
-	scheduledExecutorService := scheduled.NewExecutorService(
-		statsScope,
-		logger,
-	)
 
 	return &Server{
 		AtlantisVersion:                config.AtlantisVersion,
@@ -864,13 +960,15 @@ func (s *Server) Start() error {
 		s.ProjectCmdOutputHandler.Handle()
 	}()
 
-	server := &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: n}
+	tlsConfig := &tls.Config{GetCertificate: s.GetSSLCertificate, MinVersion: tls.VersionTLS12}
+
+	server := &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: n, TLSConfig: tlsConfig, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		s.Logger.Info("Atlantis started - listening on port %v", s.Port)
 
 		var err error
 		if s.SSLCertFile != "" && s.SSLKeyFile != "" {
-			err = server.ListenAndServeTLS(s.SSLCertFile, s.SSLKeyFile)
+			err = server.ListenAndServeTLS("", "")
 		} else {
 			err = server.ListenAndServe()
 		}
@@ -891,7 +989,7 @@ func (s *Server) Start() error {
 
 	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second) // nolint: vet
 	if err := server.Shutdown(ctx); err != nil {
-		return cli.NewExitError(fmt.Sprintf("while shutting down: %s", err), 1)
+		return fmt.Errorf("while shutting down: %s", err)
 	}
 	return nil
 }
@@ -985,6 +1083,30 @@ func (s *Server) Healthz(w http.ResponseWriter, _ *http.Request) {
 var healthzData = []byte(`{
   "status": "ok"
 }`)
+
+func (s *Server) GetSSLCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	certStat, err := os.Stat(s.SSLCertFile)
+	if err != nil {
+		return nil, fmt.Errorf("while getting cert file modification time: %w", err)
+	}
+
+	keyStat, err := os.Stat(s.SSLKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("while getting key file modification time: %w", err)
+	}
+
+	if s.SSLCert == nil || certStat.ModTime() != s.CertLastRefreshTime || keyStat.ModTime() != s.KeyLastRefreshTime {
+		cert, err := tls.LoadX509KeyPair(s.SSLCertFile, s.SSLKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("while loading tls cert: %w", err)
+		}
+
+		s.SSLCert = &cert
+		s.CertLastRefreshTime = certStat.ModTime()
+		s.KeyLastRefreshTime = keyStat.ModTime()
+	}
+	return s.SSLCert, nil
+}
 
 // ParseAtlantisURL parses the user-passed atlantis URL to ensure it is valid
 // and we can use it in our templates.

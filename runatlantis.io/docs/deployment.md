@@ -104,7 +104,7 @@ If you're using Bitbucket Cloud then there is no webhook secret since it's not s
 :::
 
 Next, edit the manifests below as follows:
-1. Replace `<VERSION>` in `image: runatlantis/atlantis:<VERSION>` with the most recent version from [https://github.com/runatlantis/atlantis/releases/latest](https://github.com/runatlantis/atlantis/releases/latest).
+1. Replace `<VERSION>` in `image: ghcr.io/runatlantis/atlantis:<VERSION>` with the most recent version from [https://github.com/runatlantis/atlantis/releases/latest](https://github.com/runatlantis/atlantis/releases/latest).
     * NOTE: You never want to run with `:latest` because if your Pod moves to a new node, Kubernetes will pull the latest image and you might end
 up upgrading Atlantis by accident!
 2. Replace `value: github.com/yourorg/*` under `name: ATLANTIS_REPO_ALLOWLIST` with the allowlist pattern
@@ -140,17 +140,17 @@ spec:
       partition: 0
   selector:
     matchLabels:
-      app: atlantis
+      app.kubernetes.io/name: atlantis
   template:
     metadata:
       labels:
-        app: atlantis
+        app.kubernetes.io/name: atlantis
     spec:
       securityContext:
         fsGroup: 1000 # Atlantis group (1000) read/write access to volumes.
       containers:
       - name: atlantis
-        image: runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
+        image: ghcr.io/runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
         env:
         - name: ATLANTIS_REPO_ALLOWLIST
           value: github.com/yourorg/* # 2. Replace this with your own repo allowlist.
@@ -270,7 +270,7 @@ spec:
     port: 80
     targetPort: 4141
   selector:
-    app: atlantis
+    app.kubernetes.io/name: atlantis
 ```
 </details>
 
@@ -285,20 +285,20 @@ kind: Deployment
 metadata:
   name: atlantis
   labels:
-    app: atlantis
+    app.kubernetes.io/name: atlantis
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: atlantis
+      app.kubernetes.io/name: atlantis
   template:
     metadata:
       labels:
-        app: atlantis
+        app.kubernetes.io/name: atlantis
     spec:
       containers:
       - name: atlantis
-        image: runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
+        image: ghcr.io/runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
         env:
         - name: ATLANTIS_REPO_ALLOWLIST
           value: github.com/yourorg/* # 2. Replace this with your own repo allowlist.
@@ -403,7 +403,7 @@ spec:
     port: 80
     targetPort: 4141
   selector:
-    app: atlantis
+    app.kubernetes.io/name: atlantis
 ```
 </details>
 
@@ -536,6 +536,13 @@ Cloud Storage Backend and TLS certs: [https://github.com/sethvargo/atlantis-on-g
 
 Once you're done, see [Next Steps](#next-steps).
 
+### Google Compute Engine (GCE)
+Atlantis can be run on Google Compute Engine using a Terraform module that deploys it as a Docker container on a managed Compute Engine instance. 
+
+This [Terraform module](https://registry.terraform.io/modules/bschaatsbergen/atlantis/gce/latest) features the creation of a Cloud load balancer, a Container-Optimized OS-based VM, a persistent data disk, and a managed instance group.
+
+After it is deployed, see [Next Steps](#next-steps).
+
 ### Docker
 Atlantis has an [official](https://ghcr.io/runatlantis/atlantis) Docker image: `ghcr.io/runatlantis/atlantis`.
 
@@ -563,7 +570,10 @@ If you need to modify the Docker image that we provide, for instance to add the 
 ### Microsoft Azure
 The standard [Kubernetes Helm Chart](#kubernetes-helm-chart) should work fine on [Azure Kubernetes Service](https://docs.microsoft.com/en-us/azure/aks/intro-kubernetes).
 
-Another option is [Azure Container Instances](https://docs.microsoft.com/en-us/azure/container-instances/). See this community member's [repo](https://github.com/jplane/atlantis-on-aci) for install scripts and more information on running Atlantis on ACI.
+
+Another option is [Azure Container Instances](https://docs.microsoft.com/en-us/azure/container-instances/). See this community member's [repo](https://github.com/jplane/atlantis-on-aci) or the new and more up-to-date [Terraform module](https://github.com/getindata/terraform-azurerm-atlantis) for install scripts and more information on running Atlantis on ACI.    
+
+**Note on ACI Deployment:** Due to a bug in earlier Docker releases, Docker v23.0.0 or later is required for straightforward deployment. Alternatively, the Atlantis Docker image can be pushed to a private registry such as ACR and then used.
 
 ### Roll Your Own
 If you want to roll your own Atlantis installation, you can get the `atlantis`

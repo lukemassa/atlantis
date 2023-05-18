@@ -27,9 +27,10 @@ import (
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/mocks"
-	eventmocks "github.com/runatlantis/atlantis/server/events/mocks"
 	"github.com/runatlantis/atlantis/server/events/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/models/testdata"
+	vcsmocks "github.com/runatlantis/atlantis/server/events/vcs/mocks"
 	jobmocks "github.com/runatlantis/atlantis/server/jobs/mocks"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
@@ -45,37 +46,37 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 	realEnv := runtime.EnvStepRunner{}
 	mockWorkingDir := mocks.NewMockWorkingDir()
 	mockLocker := mocks.NewMockProjectLocker()
-	mockApplyReqHandler := mocks.NewMockApplyRequirement()
+	mockCommandRequirementHandler := mocks.NewMockCommandRequirementHandler()
 
 	runner := events.DefaultProjectCommandRunner{
-		Locker:                     mockLocker,
-		LockURLGenerator:           mockURLGenerator{},
-		InitStepRunner:             mockInit,
-		PlanStepRunner:             mockPlan,
-		ApplyStepRunner:            mockApply,
-		RunStepRunner:              mockRun,
-		EnvStepRunner:              &realEnv,
-		PullApprovedChecker:        nil,
-		WorkingDir:                 mockWorkingDir,
-		Webhooks:                   nil,
-		WorkingDirLocker:           events.NewDefaultWorkingDirLocker(),
-		AggregateApplyRequirements: mockApplyReqHandler,
+		Locker:                    mockLocker,
+		LockURLGenerator:          mockURLGenerator{},
+		InitStepRunner:            mockInit,
+		PlanStepRunner:            mockPlan,
+		ApplyStepRunner:           mockApply,
+		RunStepRunner:             mockRun,
+		EnvStepRunner:             &realEnv,
+		PullApprovedChecker:       nil,
+		WorkingDir:                mockWorkingDir,
+		Webhooks:                  nil,
+		WorkingDirLocker:          events.NewDefaultWorkingDirLocker(),
+		CommandRequirementHandler: mockCommandRequirementHandler,
 	}
 
-	repoDir, cleanup := TempDir(t)
-	defer cleanup()
+	repoDir := t.TempDir()
 	When(mockWorkingDir.Clone(
-		matchers.AnyPtrToLoggingSimpleLogger(),
+		matchers.AnyLoggingSimpleLogging(),
 		matchers.AnyModelsRepo(),
 		matchers.AnyModelsPullRequest(),
 		AnyString(),
 	)).ThenReturn(repoDir, false, nil)
 	When(mockLocker.TryLock(
-		matchers.AnyPtrToLoggingSimpleLogger(),
+		matchers.AnyLoggingSimpleLogging(),
 		matchers.AnyModelsPullRequest(),
 		matchers.AnyModelsUser(),
 		AnyString(),
 		matchers.AnyModelsProject(),
+		AnyBool(),
 	)).ThenReturn(&events.TryLockResponse{
 		LockAcquired: true,
 		LockKey:      "lock-key",
@@ -190,8 +191,8 @@ func TestProjectOutputWrapper(t *testing.T) {
 			var prjResult command.ProjectResult
 			var expCommitStatus models.CommitStatus
 
-			mockJobURLSetter := eventmocks.NewMockJobURLSetter()
-			mockJobMessageSender := eventmocks.NewMockJobMessageSender()
+			mockJobURLSetter := mocks.NewMockJobURLSetter()
+			mockJobMessageSender := mocks.NewMockJobMessageSender()
 			mockProjectCommandRunner := mocks.NewMockProjectCommandRunner()
 
 			runner := &events.ProjectOutputWrapper{
@@ -218,8 +219,8 @@ func TestProjectOutputWrapper(t *testing.T) {
 				expCommitStatus = models.FailedCommitStatus
 			}
 
-			When(mockProjectCommandRunner.Plan(matchers.AnyModelsProjectCommandContext())).ThenReturn(prjResult)
-			When(mockProjectCommandRunner.Apply(matchers.AnyModelsProjectCommandContext())).ThenReturn(prjResult)
+			When(mockProjectCommandRunner.Plan(matchers.AnyCommandProjectContext())).ThenReturn(prjResult)
+			When(mockProjectCommandRunner.Apply(matchers.AnyCommandProjectContext())).ThenReturn(prjResult)
 
 			switch c.CommandName {
 			case command.Plan:
@@ -228,8 +229,8 @@ func TestProjectOutputWrapper(t *testing.T) {
 				runner.Apply(ctx)
 			}
 
-			mockJobURLSetter.VerifyWasCalled(Once()).SetJobURLWithStatus(ctx, c.CommandName, models.PendingCommitStatus)
-			mockJobURLSetter.VerifyWasCalled(Once()).SetJobURLWithStatus(ctx, c.CommandName, expCommitStatus)
+			mockJobURLSetter.VerifyWasCalled(Once()).SetJobURLWithStatus(ctx, c.CommandName, models.PendingCommitStatus, nil)
+			mockJobURLSetter.VerifyWasCalled(Once()).SetJobURLWithStatus(ctx, c.CommandName, expCommitStatus, &prjResult)
 
 			switch c.CommandName {
 			case command.Plan:
@@ -262,15 +263,14 @@ func TestDefaultProjectCommandRunner_ApplyNotApproved(t *testing.T) {
 	runner := &events.DefaultProjectCommandRunner{
 		WorkingDir:       mockWorkingDir,
 		WorkingDirLocker: events.NewDefaultWorkingDirLocker(),
-		AggregateApplyRequirements: &events.AggregateApplyRequirements{
+		CommandRequirementHandler: &events.DefaultCommandRequirementHandler{
 			WorkingDir: mockWorkingDir,
 		},
 	}
 	ctx := command.ProjectContext{
 		ApplyRequirements: []string{"approved"},
 	}
-	tmp, cleanup := TempDir(t)
-	defer cleanup()
+	tmp := t.TempDir()
 	When(mockWorkingDir.GetWorkingDir(ctx.BaseRepo, ctx.Pull, ctx.Workspace)).ThenReturn(tmp, nil)
 
 	res := runner.Apply(ctx)
@@ -284,7 +284,7 @@ func TestDefaultProjectCommandRunner_ApplyNotMergeable(t *testing.T) {
 	runner := &events.DefaultProjectCommandRunner{
 		WorkingDir:       mockWorkingDir,
 		WorkingDirLocker: events.NewDefaultWorkingDirLocker(),
-		AggregateApplyRequirements: &events.AggregateApplyRequirements{
+		CommandRequirementHandler: &events.DefaultCommandRequirementHandler{
 			WorkingDir: mockWorkingDir,
 		},
 	}
@@ -294,8 +294,7 @@ func TestDefaultProjectCommandRunner_ApplyNotMergeable(t *testing.T) {
 		},
 		ApplyRequirements: []string{"mergeable"},
 	}
-	tmp, cleanup := TempDir(t)
-	defer cleanup()
+	tmp := t.TempDir()
 	When(mockWorkingDir.GetWorkingDir(ctx.BaseRepo, ctx.Pull, ctx.Workspace)).ThenReturn(tmp, nil)
 
 	res := runner.Apply(ctx)
@@ -309,16 +308,18 @@ func TestDefaultProjectCommandRunner_ApplyDiverged(t *testing.T) {
 	runner := &events.DefaultProjectCommandRunner{
 		WorkingDir:       mockWorkingDir,
 		WorkingDirLocker: events.NewDefaultWorkingDirLocker(),
-		AggregateApplyRequirements: &events.AggregateApplyRequirements{
+		CommandRequirementHandler: &events.DefaultCommandRequirementHandler{
 			WorkingDir: mockWorkingDir,
 		},
 	}
+	log := logging.NewNoopLogger(t)
 	ctx := command.ProjectContext{
+		Log:               log,
 		ApplyRequirements: []string{"undiverged"},
 	}
-	tmp, cleanup := TempDir(t)
-	defer cleanup()
+	tmp := t.TempDir()
 	When(mockWorkingDir.GetWorkingDir(ctx.BaseRepo, ctx.Pull, ctx.Workspace)).ThenReturn(tmp, nil)
+	When(mockWorkingDir.HasDiverged(log, tmp)).ThenReturn(true)
 
 	res := runner.Apply(ctx)
 	Equals(t, "Default branch must be rebased onto pull request before running apply.", res.Failure)
@@ -414,25 +415,24 @@ func TestDefaultProjectCommandRunner_Apply(t *testing.T) {
 			mockWorkingDir := mocks.NewMockWorkingDir()
 			mockLocker := mocks.NewMockProjectLocker()
 			mockSender := mocks.NewMockWebhooksSender()
-			applyReqHandler := &events.AggregateApplyRequirements{
+			applyReqHandler := &events.DefaultCommandRequirementHandler{
 				WorkingDir: mockWorkingDir,
 			}
 
 			runner := events.DefaultProjectCommandRunner{
-				Locker:                     mockLocker,
-				LockURLGenerator:           mockURLGenerator{},
-				InitStepRunner:             mockInit,
-				PlanStepRunner:             mockPlan,
-				ApplyStepRunner:            mockApply,
-				RunStepRunner:              mockRun,
-				EnvStepRunner:              mockEnv,
-				WorkingDir:                 mockWorkingDir,
-				Webhooks:                   mockSender,
-				WorkingDirLocker:           events.NewDefaultWorkingDirLocker(),
-				AggregateApplyRequirements: applyReqHandler,
+				Locker:                    mockLocker,
+				LockURLGenerator:          mockURLGenerator{},
+				InitStepRunner:            mockInit,
+				PlanStepRunner:            mockPlan,
+				ApplyStepRunner:           mockApply,
+				RunStepRunner:             mockRun,
+				EnvStepRunner:             mockEnv,
+				WorkingDir:                mockWorkingDir,
+				Webhooks:                  mockSender,
+				WorkingDirLocker:          events.NewDefaultWorkingDirLocker(),
+				CommandRequirementHandler: applyReqHandler,
 			}
-			repoDir, cleanup := TempDir(t)
-			defer cleanup()
+			repoDir := t.TempDir()
 			When(mockWorkingDir.GetWorkingDir(
 				matchers.AnyModelsRepo(),
 				matchers.AnyModelsPullRequest(),
@@ -490,21 +490,20 @@ func TestDefaultProjectCommandRunner_ApplyRunStepFailure(t *testing.T) {
 	mockWorkingDir := mocks.NewMockWorkingDir()
 	mockLocker := mocks.NewMockProjectLocker()
 	mockSender := mocks.NewMockWebhooksSender()
-	applyReqHandler := &events.AggregateApplyRequirements{
+	applyReqHandler := &events.DefaultCommandRequirementHandler{
 		WorkingDir: mockWorkingDir,
 	}
 
 	runner := events.DefaultProjectCommandRunner{
-		Locker:                     mockLocker,
-		LockURLGenerator:           mockURLGenerator{},
-		ApplyStepRunner:            mockApply,
-		WorkingDir:                 mockWorkingDir,
-		WorkingDirLocker:           events.NewDefaultWorkingDirLocker(),
-		AggregateApplyRequirements: applyReqHandler,
-		Webhooks:                   mockSender,
+		Locker:                    mockLocker,
+		LockURLGenerator:          mockURLGenerator{},
+		ApplyStepRunner:           mockApply,
+		WorkingDir:                mockWorkingDir,
+		WorkingDirLocker:          events.NewDefaultWorkingDirLocker(),
+		CommandRequirementHandler: applyReqHandler,
+		Webhooks:                  mockSender,
 	}
-	repoDir, cleanup := TempDir(t)
-	defer cleanup()
+	repoDir := t.TempDir()
 	When(mockWorkingDir.GetWorkingDir(
 		matchers.AnyModelsRepo(),
 		matchers.AnyModelsPullRequest(),
@@ -549,31 +548,33 @@ func TestDefaultProjectCommandRunner_RunEnvSteps(t *testing.T) {
 	}
 	mockWorkingDir := mocks.NewMockWorkingDir()
 	mockLocker := mocks.NewMockProjectLocker()
+	mockCommandRequirementHandler := mocks.NewMockCommandRequirementHandler()
 
 	runner := events.DefaultProjectCommandRunner{
-		Locker:           mockLocker,
-		LockURLGenerator: mockURLGenerator{},
-		RunStepRunner:    &run,
-		EnvStepRunner:    &env,
-		WorkingDir:       mockWorkingDir,
-		Webhooks:         nil,
-		WorkingDirLocker: events.NewDefaultWorkingDirLocker(),
+		Locker:                    mockLocker,
+		LockURLGenerator:          mockURLGenerator{},
+		RunStepRunner:             &run,
+		EnvStepRunner:             &env,
+		WorkingDir:                mockWorkingDir,
+		Webhooks:                  nil,
+		WorkingDirLocker:          events.NewDefaultWorkingDirLocker(),
+		CommandRequirementHandler: mockCommandRequirementHandler,
 	}
 
-	repoDir, cleanup := TempDir(t)
-	defer cleanup()
+	repoDir := t.TempDir()
 	When(mockWorkingDir.Clone(
-		matchers.AnyPtrToLoggingSimpleLogger(),
+		matchers.AnyLoggingSimpleLogging(),
 		matchers.AnyModelsRepo(),
 		matchers.AnyModelsPullRequest(),
 		AnyString(),
 	)).ThenReturn(repoDir, false, nil)
 	When(mockLocker.TryLock(
-		matchers.AnyPtrToLoggingSimpleLogger(),
+		matchers.AnyLoggingSimpleLogging(),
 		matchers.AnyModelsPullRequest(),
 		matchers.AnyModelsUser(),
 		AnyString(),
 		matchers.AnyModelsProject(),
+		AnyBool(),
 	)).ThenReturn(&events.TryLockResponse{
 		LockAcquired: true,
 		LockKey:      "lock-key",
@@ -624,8 +625,637 @@ func TestDefaultProjectCommandRunner_RunEnvSteps(t *testing.T) {
 	Equals(t, "var=\n\nvar=value\n\ndynamic_var=dynamic_value\n\ndynamic_var=overridden\n", res.PlanSuccess.TerraformOutput)
 }
 
+// Test that it runs the expected import steps.
+func TestDefaultProjectCommandRunner_Import(t *testing.T) {
+	expEnvs := map[string]string{}
+	cases := []struct {
+		description   string
+		steps         []valid.Step
+		importReqs    []string
+		pullReqStatus models.PullReqStatus
+		setup         func(repoDir string, ctx command.ProjectContext, mockLocker *mocks.MockProjectLocker, mockInit *mocks.MockStepRunner, mockImport *mocks.MockStepRunner)
+
+		expSteps   []string
+		expOut     *models.ImportSuccess
+		expFailure string
+	}{
+		{
+			description: "normal workflow",
+			steps:       valid.DefaultImportStage.Steps,
+			importReqs:  []string{"approved"},
+			pullReqStatus: models.PullReqStatus{
+				ApprovalStatus: models.ApprovalStatus{
+					IsApproved: true,
+				},
+			},
+			setup: func(repoDir string, ctx command.ProjectContext, mockLocker *mocks.MockProjectLocker, mockInit *mocks.MockStepRunner, mockImport *mocks.MockStepRunner) {
+				When(mockLocker.TryLock(
+					matchers.AnyLoggingSimpleLogging(),
+					matchers.AnyModelsPullRequest(),
+					matchers.AnyModelsUser(),
+					AnyString(),
+					matchers.AnyModelsProject(),
+					AnyBool(),
+				)).ThenReturn(&events.TryLockResponse{
+					LockAcquired: true,
+					LockKey:      "lock-key",
+				}, nil)
+
+				When(mockInit.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("init", nil)
+				When(mockImport.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("import", nil)
+			},
+			expSteps: []string{"import"},
+			expOut: &models.ImportSuccess{
+				Output:    "init\nimport",
+				RePlanCmd: "atlantis plan -d .",
+			},
+		},
+		{
+			description: "approval required",
+			steps:       valid.DefaultImportStage.Steps,
+			importReqs:  []string{"approved"},
+			pullReqStatus: models.PullReqStatus{
+				ApprovalStatus: models.ApprovalStatus{
+					IsApproved: false,
+				},
+			},
+			expFailure: "Pull request must be approved by at least one person other than the author before running import.",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.description, func(t *testing.T) {
+			RegisterMockTestingT(t)
+			mockInit := mocks.NewMockStepRunner()
+			mockImport := mocks.NewMockStepRunner()
+			mockStateRm := mocks.NewMockStepRunner()
+			mockWorkingDir := mocks.NewMockWorkingDir()
+			mockLocker := mocks.NewMockProjectLocker()
+			mockSender := mocks.NewMockWebhooksSender()
+			applyReqHandler := &events.DefaultCommandRequirementHandler{
+				WorkingDir: mockWorkingDir,
+			}
+
+			runner := events.DefaultProjectCommandRunner{
+				Locker:                    mockLocker,
+				LockURLGenerator:          mockURLGenerator{},
+				InitStepRunner:            mockInit,
+				ImportStepRunner:          mockImport,
+				StateRmStepRunner:         mockStateRm,
+				WorkingDir:                mockWorkingDir,
+				Webhooks:                  mockSender,
+				WorkingDirLocker:          events.NewDefaultWorkingDirLocker(),
+				CommandRequirementHandler: applyReqHandler,
+			}
+			ctx := command.ProjectContext{
+				Log:                logging.NewNoopLogger(t),
+				Steps:              c.steps,
+				Workspace:          "default",
+				ImportRequirements: c.importReqs,
+				RepoRelDir:         ".",
+				PullReqStatus:      c.pullReqStatus,
+				RePlanCmd:          "atlantis plan -d . -- addr id",
+			}
+			repoDir := t.TempDir()
+			When(mockWorkingDir.Clone(
+				matchers.AnyLoggingSimpleLogging(),
+				matchers.AnyModelsRepo(),
+				matchers.AnyModelsPullRequest(),
+				AnyString(),
+			)).ThenReturn(repoDir, false, nil)
+			if c.setup != nil {
+				c.setup(repoDir, ctx, mockLocker, mockInit, mockImport)
+			}
+
+			res := runner.Import(ctx)
+			Equals(t, c.expOut, res.ImportSuccess)
+			Equals(t, c.expFailure, res.Failure)
+
+			for _, step := range c.expSteps {
+				switch step {
+				case "init":
+					mockInit.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
+				case "import":
+					mockImport.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
+				}
+			}
+		})
+	}
+}
+
 type mockURLGenerator struct{}
 
 func (m mockURLGenerator) GenerateLockURL(lockID string) string {
 	return "https://" + lockID
+}
+
+// Test approve policies logic.
+func TestDefaultProjectCommandRunner_ApprovePolicies(t *testing.T) {
+	cases := []struct {
+		description string
+
+		policySetCfg        valid.PolicySets
+		policySetStatus     []models.PolicySetStatus
+		userTeams           []string // Teams the user is a member of
+		targetedPolicy      string   // Policy to target when running approvals
+		clearPolicyApproval bool
+
+		expOut     []models.PolicySetResult
+		expFailure string
+		hasErr     bool
+	}{
+		{
+			description: "When user is not an owner at any level, approve policy fails.",
+			hasErr:      true,
+			policySetCfg: valid.PolicySets{
+				Owners: valid.PolicyOwners{
+					Users: []string{"someotheruser1"},
+				},
+				PolicySets: []valid.PolicySet{
+					{
+						Name:         "policy1",
+						ApproveCount: 1,
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someotherteam"},
+						},
+					},
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+				},
+			},
+			expFailure: "One or more policy sets require additional approval.",
+		},
+		{
+			description: "When user is a top-level owner, increment approval count on all policies.",
+			hasErr:      false,
+			policySetCfg: valid.PolicySets{
+				Owners: valid.PolicyOwners{
+					Users: []string{testdata.User.Username},
+				},
+				PolicySets: []valid.PolicySet{
+					{
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Name:         "policy2",
+						ApproveCount: 2,
+					},
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  2,
+					CurApprovals:  1,
+				},
+			},
+			expFailure: "One or more policy sets require additional approval.",
+		},
+		{
+			description: "When user is not a top-level owner, but an owner of a policy set, increment approval count only the policy set they are an owner of.",
+			hasErr:      true,
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Users: []string{testdata.User.Username},
+						},
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Name:         "policy2",
+						ApproveCount: 2,
+					},
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  2,
+					CurApprovals:  0,
+				},
+			},
+			expFailure: "One or more policy sets require additional approval.",
+		},
+		{
+			description: "When user is a top-level ownner through membership, increment approval on all policies.",
+			userTeams:   []string{"someuserteam"},
+			policySetCfg: valid.PolicySets{
+				Owners: valid.PolicyOwners{
+					Teams: []string{"someuserteam"},
+				},
+				PolicySets: []valid.PolicySet{
+					{
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Name:         "policy2",
+						ApproveCount: 1,
+					},
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+			},
+			expFailure: "",
+		},
+		{
+			description: "When user is not a top-level owner, but is an owner of one policy set through nembership, increment approval only the policy to which they are an owner.",
+			hasErr:      true,
+			userTeams:   []string{"someuserteam"},
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Name:         "policy2",
+						ApproveCount: 1,
+					},
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  1,
+					CurApprovals:  0,
+				},
+			},
+			expFailure: "One or more policy sets require additional approval.",
+		},
+		{
+			description: "Do not increment or error on passing or fully-approved policy sets.",
+			userTeams:   []string{"someuserteam"},
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 2,
+					},
+				},
+			},
+			policySetStatus: []models.PolicySetStatus{
+				{
+					PolicySetName: "policy1",
+					Approvals:     2,
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  2,
+					CurApprovals:  2,
+				},
+			},
+			expFailure: ``,
+			hasErr:     false,
+		},
+		{
+			description: "Policies should not fail if they pass.",
+			userTeams:   []string{"someuserteam"},
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 2,
+					},
+				},
+			},
+			policySetStatus: []models.PolicySetStatus{
+				{
+					PolicySetName: "policy1",
+					Passed:        true,
+					Approvals:     0,
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  2,
+					CurApprovals:  0,
+					Passed:        true,
+				},
+			},
+			expFailure: ``,
+			hasErr:     false,
+		},
+		{
+			description:    "Non-targeted failing policies should still trigger failure when a targeted policy is cleared.",
+			userTeams:      []string{"someuserteam"},
+			targetedPolicy: "policy1",
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy2",
+						ApproveCount: 1,
+					},
+				},
+			},
+			policySetStatus: []models.PolicySetStatus{
+				{
+					PolicySetName: "policy1",
+					Approvals:     0,
+					Passed:        false,
+				},
+				{
+					PolicySetName: "policy2",
+					Approvals:     0,
+					Passed:        false,
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  1,
+					CurApprovals:  0,
+				},
+			},
+			expFailure: `One or more policy sets require additional approval.`,
+			hasErr:     false,
+		},
+		{
+			description:         "Approval count should be zero if ClearPolicyApproval is set.",
+			userTeams:           []string{"someuserteam"},
+			clearPolicyApproval: true,
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy2",
+						ApproveCount: 2,
+					},
+				},
+			},
+			policySetStatus: []models.PolicySetStatus{
+				{
+					PolicySetName: "policy1",
+					Approvals:     1,
+					Passed:        false,
+				},
+				{
+					PolicySetName: "policy2",
+					Approvals:     1,
+					Passed:        false,
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  0,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  2,
+					CurApprovals:  0,
+				},
+			},
+			expFailure: `One or more policy sets require additional approval.`,
+			hasErr:     false,
+		},
+		{
+			description:         "Approval count should not clear if user is not owner and ClearPolicyApproval is set.",
+			userTeams:           []string{"someuserteam"},
+			clearPolicyApproval: true,
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someotheruserteam"},
+						},
+						Name:         "policy2",
+						ApproveCount: 2,
+					},
+				},
+			},
+			policySetStatus: []models.PolicySetStatus{
+				{
+					PolicySetName: "policy1",
+					Approvals:     1,
+					Passed:        false,
+				},
+				{
+					PolicySetName: "policy2",
+					Approvals:     1,
+					Passed:        false,
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  0,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  2,
+					CurApprovals:  1,
+				},
+			},
+			expFailure: `One or more policy sets require additional approval.`,
+			hasErr:     true,
+		},
+		{
+			description:         "Approval count should only clear targeted policies when ClearPolicyApproval is set.",
+			userTeams:           []string{"someuserteam"},
+			targetedPolicy:      "policy2",
+			clearPolicyApproval: true,
+			policySetCfg: valid.PolicySets{
+				PolicySets: []valid.PolicySet{
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy1",
+						ApproveCount: 1,
+					},
+					{
+						Owners: valid.PolicyOwners{
+							Teams: []string{"someuserteam"},
+						},
+						Name:         "policy2",
+						ApproveCount: 2,
+					},
+				},
+			},
+			policySetStatus: []models.PolicySetStatus{
+				{
+					PolicySetName: "policy1",
+					Approvals:     1,
+					Passed:        false,
+				},
+				{
+					PolicySetName: "policy2",
+					Approvals:     1,
+					Passed:        false,
+				},
+			},
+			expOut: []models.PolicySetResult{
+				{
+					PolicySetName: "policy1",
+					ReqApprovals:  1,
+					CurApprovals:  1,
+				},
+				{
+					PolicySetName: "policy2",
+					ReqApprovals:  2,
+					CurApprovals:  0,
+				},
+			},
+			expFailure: `One or more policy sets require additional approval.`,
+			hasErr:     false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.description, func(t *testing.T) {
+			RegisterMockTestingT(t)
+			mockVcsClient := vcsmocks.NewMockClient()
+			mockInit := mocks.NewMockStepRunner()
+			mockPlan := mocks.NewMockStepRunner()
+			mockApply := mocks.NewMockStepRunner()
+			mockRun := mocks.NewMockCustomStepRunner()
+			mockEnv := mocks.NewMockEnvStepRunner()
+			mockWorkingDir := mocks.NewMockWorkingDir()
+			mockLocker := mocks.NewMockProjectLocker()
+			mockSender := mocks.NewMockWebhooksSender()
+
+			runner := events.DefaultProjectCommandRunner{
+				Locker:           mockLocker,
+				VcsClient:        mockVcsClient,
+				LockURLGenerator: mockURLGenerator{},
+				InitStepRunner:   mockInit,
+				PlanStepRunner:   mockPlan,
+				ApplyStepRunner:  mockApply,
+				RunStepRunner:    mockRun,
+				EnvStepRunner:    mockEnv,
+				WorkingDir:       mockWorkingDir,
+				Webhooks:         mockSender,
+				WorkingDirLocker: events.NewDefaultWorkingDirLocker(),
+			}
+			repoDir := t.TempDir()
+			When(mockWorkingDir.GetWorkingDir(
+				matchers.AnyModelsRepo(),
+				matchers.AnyModelsPullRequest(),
+				AnyString(),
+			)).ThenReturn(repoDir, nil)
+			When(mockLocker.TryLock(
+				matchers.AnyLoggingSimpleLogging(),
+				matchers.AnyModelsPullRequest(),
+				matchers.AnyModelsUser(),
+				AnyString(),
+				matchers.AnyModelsProject(),
+				AnyBool(),
+			)).ThenReturn(&events.TryLockResponse{
+				LockAcquired: true,
+				LockKey:      "lock-key",
+			}, nil)
+
+			var projPolicyStatus []models.PolicySetStatus
+			if c.policySetStatus == nil {
+				for _, p := range c.policySetCfg.PolicySets {
+					projPolicyStatus = append(projPolicyStatus, models.PolicySetStatus{
+						PolicySetName: p.Name,
+					})
+				}
+			} else {
+				projPolicyStatus = c.policySetStatus
+			}
+
+			modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+			When(runner.VcsClient.GetTeamNamesForUser(testdata.GithubRepo, testdata.User)).ThenReturn(c.userTeams, nil)
+			ctx := command.ProjectContext{
+				User:                testdata.User,
+				Log:                 logging.NewNoopLogger(t),
+				Workspace:           "default",
+				RepoRelDir:          ".",
+				PolicySets:          c.policySetCfg,
+				ProjectPolicyStatus: projPolicyStatus,
+				Pull:                modelPull,
+				PolicySetTarget:     c.targetedPolicy,
+				ClearPolicyApproval: c.clearPolicyApproval,
+			}
+
+			res := runner.ApprovePolicies(ctx)
+			Equals(t, c.expOut, res.PolicyCheckResults.PolicySetResults)
+			Equals(t, c.expFailure, res.Failure)
+			if c.hasErr == true {
+				Assert(t, res.Error != nil, "expecting error.")
+			} else {
+				Assert(t, res.Error == nil, "not expecting error.")
+			}
+		})
+	}
 }

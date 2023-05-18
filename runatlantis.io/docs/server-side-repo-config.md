@@ -35,8 +35,18 @@ repos:
   # By default, all branches are matched
   branch: /.*/
 
+  # repo_config_file specifies which repo config file to use for this repo.
+  # By default, atlantis.yaml is used.
+  repo_config_file: path/to/atlantis.yaml
+
+  # plan_requirements sets the Plan Requirements for all repos that match.
+  plan_requirements: [approved, mergeable, undiverged]
+
   # apply_requirements sets the Apply Requirements for all repos that match.
-  apply_requirements: [approved, mergeable]
+  apply_requirements: [approved, mergeable, undiverged]
+
+  # import_requirements sets the Import Requirements for all repos that match.
+  import_requirements: [approved, mergeable, undiverged]
 
   # workflow sets the workflow for all repos that match.
   # This workflow must be defined in the workflows section.
@@ -44,7 +54,7 @@ repos:
 
   # allowed_overrides specifies which keys can be overridden by this repo in
   # its atlantis.yaml file.
-  allowed_overrides: [apply_requirements, workflow, delete_source_branch_on_merge]
+  allowed_overrides: [apply_requirements, workflow, delete_source_branch_on_merge, repo_locking]
 
   # allowed_workflows specifies which workflows the repos that match 
   # are allowed to select.
@@ -58,7 +68,11 @@ repos:
   # delete_source_branch_on_merge defines whether the source branch would be deleted on merge
   # If false (default), the source branch won't be deleted on merge
   delete_source_branch_on_merge: true
-  
+
+  # repo_locking defines whether lock repository when planning.
+  # If true (default), atlantis try to get a lock.
+  repo_locking: true
+
   # pre_workflow_hooks defines arbitrary list of scripts to execute before workflow execution.
   pre_workflow_hooks: 
     - run: my-pre-workflow-hook-command arg1
@@ -89,16 +103,18 @@ workflows:
 ## Use Cases
 Here are some of the reasons you might want to use a repo config.
 
-### Requiring PR Is Approved Before Apply
+### Requiring PR Is Approved Before an applicable subcommand
 If you want to require that all (or specific) repos must have pull requests
-approved before Atlantis will allow running `apply`, use the `apply_requirements` key.
+approved before Atlantis will allow running `apply` or `import`, use the `plan_requirements`, `apply_requirements` or `import_requirements` keys.
 
 For all repos:
 ```yaml
 # repos.yaml
 repos:
 - id: /.*/
+  plan_requirements: [approved]
   apply_requirements: [approved]
+  import_requirements: [approved]
 ```
 
 For a specific repo:
@@ -106,21 +122,25 @@ For a specific repo:
 # repos.yaml
 repos:
 - id: github.com/myorg/myrepo
+  plan_requirements: [approved]
   apply_requirements: [approved]
+  import_requirements: [approved]
 ```
 
-See [Apply Requirements](apply-requirements.html) for more details.
+See [Command Requirements](command-requirements.html) for more details.
 
-### Requiring PR Is "Mergeable" Before Apply
+### Requiring PR Is "Mergeable" Before Apply or Import
 If you want to require that all (or specific) repos must have pull requests
-in a mergeable state before Atlantis will allow running `apply`, use the `apply_requirements` key.
+in a mergeable state before Atlantis will allow running `apply` or `import`, use the `plan_requirements`, `apply_requirements` or `import_requirements` keys.
 
 For all repos:
 ```yaml
 # repos.yaml
 repos:
 - id: /.*/
+  plan_requirements: [mergeable]
   apply_requirements: [mergeable]
+  import_requirements: [mergeable]
 ```
 
 For a specific repo:
@@ -128,12 +148,14 @@ For a specific repo:
 # repos.yaml
 repos:
 - id: github.com/myorg/myrepo
+  plan_requirements: [mergeable]
   apply_requirements: [mergeable]
+  import_requirements: [mergeable]
 ```
 
-See [Apply Requirements](apply-requirements.html) for more details.
+See [Command Requirements](command-requirements.html) for more details.
 
-### Repos Can Set Their Own Apply Requirements
+### Repos Can Set Their Own Apply an applicable subcommand
 If you want all (or specific) repos to be able to override the default apply requirements, use
 the `allowed_overrides` key.
 
@@ -143,10 +165,12 @@ To allow all repos to override the default:
 repos:
 - id: /.*/
   # The default will be approved.
+  plan_requirements: [approved]
   apply_requirements: [approved]
+  import_requirements: [approved]
 
   # But all repos can set their own using atlantis.yaml
-  allowed_overrides: [apply_requirements]
+  allowed_overrides: [plan_requirements, apply_requirements, import_requirements]
 ```
 To allow only a specific repo to override the default:
 ```yaml
@@ -154,21 +178,25 @@ To allow only a specific repo to override the default:
 repos:
 # Set a default for all repos.
 - id: /.*/
+  plan_requirements: [approved]
   apply_requirements: [approved]
+  import_requirements: [approved]
 
 # Allow a specific repo to override.
 - id: github.com/myorg/myrepo
-  allowed_overrides: [apply_requirements]
+  allowed_overrides: [plan_requirements, apply_requirements, import_requirements]
 ```
 
 Then each allowed repo can have an `atlantis.yaml` file that
-sets `apply_requirements` to an empty array (disabling the requirement).
+sets `plan_requirements`, `apply_requirements` or `import_requirements` to an empty array (disabling the requirement).
 ```yaml
-# atlantis.yaml in the repo root
+# atlantis.yaml in the repo root or set repo_config_file in repos.yaml
 version: 3
 projects:
 - dir: .
+  plan_requirements: []
   apply_requirements: []
+  import_requirements: []
 ```
 
 ### Running Scripts Before Atlantis Workflows
@@ -353,6 +381,54 @@ workflows:
 See [Custom Workflows](custom-workflows.html) for more details on writing
 custom workflows.
 
+### Multiple Atlantis Servers Handle The Same Repository
+Running multiple Atlantis servers to handle the same repository can be done to separate permissions for each Atlantis server.
+In this case, a different [atlantis.yaml](repo-level-atlantis-yaml.html) repository config file can be used by using different `repos.yaml` files.
+
+For example, consider a situation where a separate `production-server` atlantis uses repo config `atlantis-production.yaml` and `staging-server` atlantis uses repo config `atlantis-staging.yaml`.
+
+Firstly, deploy 2 Atlantis servers, `production-server` and `staging-server`.
+Each server has different permissions and a different `repos.yaml` file.
+The `repos.yaml` contains `repo_config_file` key to specify the repository atlantis config file path.
+
+```yaml
+# repos.yaml
+repos:
+- id: /.*/
+  # for production-server
+  repo_config_file: atlantis-production.yaml
+  # for staging-server
+  # repo_config_file: atlantis-staging.yaml
+```
+
+Then, create `atlantis-production.yaml` and `atlantis-staging.yaml` files in the repository.
+See the configuration examples in [atlantis.yaml](repo-level-atlantis-yaml.html).
+
+```yaml
+# atlantis-production.yaml
+version: 3
+projects:
+- name: project
+  branch: /production/
+  dir: infrastructure/production
+---
+# atlantis-staging.yaml
+version: 3
+projects:
+  - name: project
+    branch: /staging/
+    dir: infrastructure/staging
+```
+
+Now, 2 webhook URLs can be setup for the repository, which send events to `production-server` and `staging-server` respectively.
+Each servers handle different repository config files.
+
+:::tip Notes
+* If `no projects` comments are annoying, set [--silence-no-projects](server-configuration.html#silence-no-projects).
+* The command trigger executable name can be reconfigured from `atlantis` to something else by setting [Executable Name](server-configuration.html#executable-name).
+* When using different atlantis server vcs users such as `@atlantis-staging`, the comment `@atlantis-staging plan` can be used instead `atlantis plan` to call `staging-server` only.
+:::
+
 ## Reference
 
 ### Top-Level Keys
@@ -370,7 +446,9 @@ custom workflows.
 repos:
 - id: /.*/
   branch: /.*/
+  plan_requirements: []
   apply_requirements: []
+  import_requirements: []
   workflow: default
   allowed_overrides: []
   allow_custom_workflows: false
@@ -392,16 +470,20 @@ If you set a workflow with the key `default`, it will override this.
 :::
 
 ### Repo
-| Key                           | Type     | Default | Required | Description                                                                                                                                                                                                                                                                                              |
-|-------------------------------|----------|---------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Key                           | Type     | Default | Required | Description                                                                                                                                                                                                                                                                                               |
+|-------------------------------|----------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | id                            | string   | none    | yes      | Value can be a regular expression when specified as /&lt;regex&gt;/ or an exact string match. Repo IDs are of the form `{vcs hostname}/{org}/{name}`, ex. `github.com/owner/repo`. Hostname is specified without scheme or port. For Bitbucket Server, {org} is the **name** of the project, not the key. |
 | branch                        | string   | none    | no       | An regex matching pull requests by base branch (the branch the pull request is getting merged into). By default, all branches are matched                                                                                                                                                                 |
-| workflow                      | string   | none    | no       | A custom workflow.                                                                                                                                                                                                                                                                                       |
-| apply_requirements            | []string | none    | no       | Requirements that must be satisfied before `atlantis apply` can be run. Currently the only supported requirements are `approved`, `mergeable`, and `undiverged`. See [Apply Requirements](apply-requirements.html) for more details.                                                                                    |
-| allowed_overrides             | []string | none    | no       | A list of restricted keys that `atlantis.yaml` files can override. The only supported keys are `apply_requirements`, `workflow` and `delete_source_branch_on_merge`                                                                                                                                      |
-| allowed_workflows             | []string | none    | no       | A list of workflows that `atlantis.yaml` files can select from.                                                                                                                                                                        |
-| allow_custom_workflows        | bool     | false   | no       | Whether or not to allow [Custom Workflows](custom-workflows.html).                                                                                                                                                                       |
-| delete_source_branch_on_merge | bool     | false   | no       | Whether or not to delete the source branch on merge (only AzureDevOps and GitLab support)                                                                                                                                                                      |
+| repo_config_file              | string   | none    | no       | Repo config file path in this repo. By default, use `atlantis.yaml` which is located on repository root. When multiple atlantis servers work with the same repo, please set different file names.                                                                                                         |
+| workflow                      | string   | none    | no       | A custom workflow.                                                                                                                                                                                             
+| plan_requirements            | []string | none    | no       | Requirements that must be satisfied before `atlantis plan` can be run. Currently the only supported requirements are `approved`, `mergeable`, and `undiverged`. See [Command Requirements](command-requirements.html) for more details.                                                                  |                                                                                           |
+| apply_requirements            | []string | none    | no       | Requirements that must be satisfied before `atlantis apply` can be run. Currently the only supported requirements are `approved`, `mergeable`, and `undiverged`. See [Command Requirements](command-requirements.html) for more details.                                                                  |
+| import_requirements           | []string | none    | no       | Requirements that must be satisfied before `atlantis import` can be run. Currently the only supported requirements are `approved`, `mergeable`, and `undiverged`. See [Command Requirements](command-requirements.html) for more details.                                                                 |
+| allowed_overrides             | []string | none    | no       | A list of restricted keys that `atlantis.yaml` files can override. The only supported keys are `apply_requirements`, `workflow`, `delete_source_branch_on_merge` and `repo_locking`                                                                                                                       |
+| allowed_workflows             | []string | none    | no       | A list of workflows that `atlantis.yaml` files can select from.                                                                                                                                                                                                                                           |
+| allow_custom_workflows        | bool     | false   | no       | Whether or not to allow [Custom Workflows](custom-workflows.html).                                                                                                                                                                                                                                        |
+| delete_source_branch_on_merge | bool     | false   | no       | Whether or not to delete the source branch on merge.                                                                                                                                                                                                                                                      |
+| repo_locking                  | bool     | false   | no       | Whether or not to get a lock                                                                                                                                                                                                                                                                              |
 
 
 :::tip Notes
@@ -437,16 +519,18 @@ If you set a workflow with the key `default`, it will override this.
 
 ### Policies
 
-| Key                    | Type            | Default | Required  | Description                              |
-|------------------------|-----------------|---------|-----------|------------------------------------------|
-| conftest_version       | string          | none    | no        | conftest version to run all policy sets  |
-| owners                 | Owners(#Owners) | none    | yes       | owners that can approve failing policies |
-| policy_sets            | []PolicySet     | none    | yes       | set of policies to run on a plan output  |
+| Key                    | Type            | Default | Required  | Description                                              |
+|------------------------|-----------------|---------|-----------|----------------------------------------------------------|
+| conftest_version       | string          | none    | no        | conftest version to run all policy sets                  |
+| owners                 | Owners(#Owners) | none    | yes       | owners that can approve failing policies                 |
+| approve_count          | int             | 1       | no        | number of approvals required to bypass failing policies. |
+| policy_sets            | []PolicySet     | none    | yes       | set of policies to run on a plan output                  |
 
 ### Owners
 | Key         | Type              | Default | Required   | Description                                             |
 |-------------|-------------------|---------|------------|---------------------------------------------------------|
-| users       | []string          | none    | yes        | list of github users that can approve failing policies  |
+| users       | []string          | none    | no         | list of github users that can approve failing policies  |
+| teams       | []string          | none    | no         | list of github teams that can approve failing policies  |
 
 ### PolicySet
 
@@ -459,9 +543,10 @@ If you set a workflow with the key `default`, it will override this.
 
 ### Metrics
 
-| Key                    | Type            | Default | Required  | Description                              |
-|------------------------|-----------------|---------|-----------|------------------------------------------|
-| statsd                 | Statsd(#Statsd) | none    | no        | Statsd metrics provider                  |
+| Key                    | Type                      | Default | Required  | Description                              |
+|------------------------|---------------------------|---------|-----------|------------------------------------------|
+| statsd                 | [Statsd](#statsd)         | none    | no        | Statsd metrics provider                  |
+| prometheus             | [Prometheus](#prometheus) | none    | no        | Statsd metrics provider                  |
 
 ### Statsd
 
@@ -469,3 +554,9 @@ If you set a workflow with the key `default`, it will override this.
 | ------ | ------ | ------- | -------- | -------------------------------------- |
 | host   | string | none    | yes      | statsd host ip address                 |
 | port   | string | none    | yes      | statsd port                            |
+
+### Prometheus
+
+| Key      | Type   | Default | Required | Description                            |
+| -------- | ------ | ------- | -------- | -------------------------------------- |
+| endpoint | string | none    | yes      | path to metrics endpoint               |

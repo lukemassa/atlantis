@@ -6,7 +6,7 @@ workflows](custom-workflows.html#custom-run-command) in that they are run
 outside of Atlantis commands. Which means they do not surface their output
 back to the PR as a comment.
 
-Post workflow hooks also only allow `run` commands.
+Post workflow hooks also only allow `run` and `description` commands.
 
 [[toc]]
 
@@ -40,6 +40,7 @@ repos:
     workflow: myworkflow
     post_workflow_hooks:
       - run: infracost output --path=/tmp/$BASE_REPO_OWNER-$BASE_REPO_NAME-$PULL_NUM-*-infracost.json --format=github-comment --out-file=/tmp/infracost-comment.md
+        description: Running infracost
       # Now report the output as desired, e.g. post to GitHub as a comment.
       # ...
 ```
@@ -55,9 +56,10 @@ command](custom-workflows.html#custom-run-command).
 - run: custom-command
 ```
 
-| Key | Type   | Default | Required | Description          |
-| --- | ------ | ------- | -------- | -------------------- |
-| run | string | none    | no       | Run a custom command |
+| Key         | Type   | Default | Required | Description           |
+| ----------- | ------ | ------- | -------- | --------------------- |
+| run         | string | none    | no       | Run a custom command  |
+| description | string | none    | no       | Post hook description |
 
 ::: tip Notes
 * `run` commands are executed with the following environment variables:
@@ -69,7 +71,11 @@ command](custom-workflows.html#custom-run-command).
   * `HEAD_COMMIT` - The sha256 that points to the head of the branch that is being pull requested into the base. If the pull request is from Bitbucket Cloud the string will only be 12 characters long because Bitbucket Cloud truncates its commit IDs.
   * `BASE_BRANCH_NAME` - Name of the base branch of the pull request (the branch that the pull request is getting merged into)
   * `PULL_NUM` - Pull request number or ID, ex. `2`.
+  * `PULL_URL` - Pull request URL, ex. `https://github.com/runatlantis/atlantis/pull/2`.
   * `PULL_AUTHOR` - Username of the pull request author, ex. `acme-user`.
   * `DIR` - The absolute path to the root of the cloned repository.
   * `USER_NAME` - Username of the VCS user running command, ex. `acme-user`. During an autoplan, the user will be the Atlantis API user, ex. `atlantis`.
+  * `COMMENT_ARGS` - Any additional flags passed in the comment on the pull request. Flags are separated by commas and
+    every character is escaped, ex. `atlantis plan -- arg1 arg2` will result in `COMMENT_ARGS=\a\r\g\1,\a\r\g\2`.
+  * `OUTPUT_STATUS_FILE` - An output file to customize the success or failure status. ex. `echo 'failure' > $OUTPUT_STATUS_FILE`.
 :::

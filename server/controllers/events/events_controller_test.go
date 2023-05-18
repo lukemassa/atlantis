@@ -17,6 +17,15 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
 	. "github.com/petergtz/pegomock"
 	events_controllers "github.com/runatlantis/atlantis/server/controllers/events"
 	"github.com/runatlantis/atlantis/server/controllers/events/mocks"
@@ -29,20 +38,13 @@ import (
 	"github.com/runatlantis/atlantis/server/metrics"
 	. "github.com/runatlantis/atlantis/testing"
 	gitlab "github.com/xanzy/go-gitlab"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"reflect"
-	"strings"
-	"testing"
 )
 
 const githubHeader = "X-Github-Event"
 const gitlabHeader = "X-Gitlab-Event"
 const azuredevopsHeader = "Request-Id"
 
+var user = []byte("user")
 var secret = []byte("secret")
 
 func AnyRepo() models.Repo {
@@ -52,7 +54,7 @@ func AnyRepo() models.Repo {
 
 func TestPost_NotGithubOrGitlab(t *testing.T) {
 	t.Log("when the request is not for gitlab or github a 400 is returned")
-	e, _, _, _, _, _, _, _ := setup(t)
+	e, _, _, _, _, _, _, _, _ := setup(t)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	e.Post(w, req)
@@ -61,7 +63,7 @@ func TestPost_NotGithubOrGitlab(t *testing.T) {
 
 func TestPost_UnsupportedVCSGithub(t *testing.T) {
 	t.Log("when the request is for an unsupported vcs a 400 is returned")
-	e, _, _, _, _, _, _, _ := setup(t)
+	e, _, _, _, _, _, _, _, _ := setup(t)
 	e.SupportedVCSHosts = nil
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "value")
@@ -72,7 +74,7 @@ func TestPost_UnsupportedVCSGithub(t *testing.T) {
 
 func TestPost_UnsupportedVCSGitlab(t *testing.T) {
 	t.Log("when the request is for an unsupported vcs a 400 is returned")
-	e, _, _, _, _, _, _, _ := setup(t)
+	e, _, _, _, _, _, _, _, _ := setup(t)
 	e.SupportedVCSHosts = nil
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
@@ -83,7 +85,7 @@ func TestPost_UnsupportedVCSGitlab(t *testing.T) {
 
 func TestPost_InvalidGithubSecret(t *testing.T) {
 	t.Log("when the github payload can't be validated a 400 is returned")
-	e, v, _, _, _, _, _, _ := setup(t)
+	e, v, _, _, _, _, _, _, _ := setup(t)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "value")
@@ -94,7 +96,7 @@ func TestPost_InvalidGithubSecret(t *testing.T) {
 
 func TestPost_InvalidGitlabSecret(t *testing.T) {
 	t.Log("when the gitlab payload can't be validated a 400 is returned")
-	e, _, gl, _, _, _, _, _ := setup(t)
+	e, _, gl, _, _, _, _, _, _ := setup(t)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
@@ -105,7 +107,7 @@ func TestPost_InvalidGitlabSecret(t *testing.T) {
 
 func TestPost_UnsupportedGithubEvent(t *testing.T) {
 	t.Log("when the event type is an unsupported github event we ignore it")
-	e, v, _, _, _, _, _, _ := setup(t)
+	e, v, _, _, _, _, _, _, _ := setup(t)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "value")
@@ -116,7 +118,7 @@ func TestPost_UnsupportedGithubEvent(t *testing.T) {
 
 func TestPost_UnsupportedGitlabEvent(t *testing.T) {
 	t.Log("when the event type is an unsupported gitlab event we ignore it")
-	e, _, gl, _, _, _, _, _ := setup(t)
+	e, _, gl, _, _, _, _, _, _ := setup(t)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
@@ -128,7 +130,7 @@ func TestPost_UnsupportedGitlabEvent(t *testing.T) {
 // Test that if the comment comes from a commit rather than a merge request,
 // we give an error and ignore it.
 func TestPost_GitlabCommentOnCommit(t *testing.T) {
-	e, _, gl, _, _, _, _, _ := setup(t)
+	e, _, gl, _, _, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	w := httptest.NewRecorder()
 	req.Header.Set(gitlabHeader, "value")
@@ -139,7 +141,7 @@ func TestPost_GitlabCommentOnCommit(t *testing.T) {
 
 func TestPost_GithubCommentNotCreated(t *testing.T) {
 	t.Log("when the event is a github comment but it's not a created event we ignore it")
-	e, v, _, _, _, _, _, _ := setup(t)
+	e, v, _, _, _, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "issue_comment")
 	// comment action is deleted, not created
@@ -152,7 +154,7 @@ func TestPost_GithubCommentNotCreated(t *testing.T) {
 
 func TestPost_GithubInvalidComment(t *testing.T) {
 	t.Log("when the event is a github comment without all expected data we return a 400")
-	e, v, _, p, _, _, _, _ := setup(t)
+	e, v, _, _, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "issue_comment")
 	event := `{"action": "created"}`
@@ -165,7 +167,7 @@ func TestPost_GithubInvalidComment(t *testing.T) {
 
 func TestPost_GitlabCommentInvalidCommand(t *testing.T) {
 	t.Log("when the event is a gitlab comment with an invalid command we ignore it")
-	e, _, gl, _, _, _, _, cp := setup(t)
+	e, _, gl, _, _, _, _, _, cp := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeCommentEvent{}, nil)
@@ -177,7 +179,7 @@ func TestPost_GitlabCommentInvalidCommand(t *testing.T) {
 
 func TestPost_GithubCommentInvalidCommand(t *testing.T) {
 	t.Log("when the event is a github comment with an invalid command we ignore it")
-	e, v, _, p, _, _, _, cp := setup(t)
+	e, v, _, _, p, _, _, vcsClient, cp := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "issue_comment")
 	event := `{"action": "created"}`
@@ -187,6 +189,7 @@ func TestPost_GithubCommentInvalidCommand(t *testing.T) {
 	w := httptest.NewRecorder()
 	e.Post(w, req)
 	ResponseContains(t, w, http.StatusOK, "Ignoring non-command comment: \"\"")
+	vcsClient.VerifyWasCalled(Never()).ReactToComment(models.Repo{}, 1, "eyes")
 }
 
 func TestPost_GitlabCommentNotAllowlisted(t *testing.T) {
@@ -198,14 +201,14 @@ func TestPost_GitlabCommentNotAllowlisted(t *testing.T) {
 	e := events_controllers.VCSEventsController{
 		Logger:                       logger,
 		Scope:                        scope,
-		CommentParser:                &events.CommentParser{},
+		CommentParser:                &events.CommentParser{ExecutableName: "atlantis"},
 		GitlabRequestParserValidator: &events_controllers.DefaultGitlabRequestParserValidator{},
 		Parser:                       &events.EventParser{},
 		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab},
 		RepoAllowlistChecker:         &events.RepoAllowlistChecker{},
 		VCSClient:                    vcsClient,
 	}
-	requestJSON, err := os.ReadFile(filepath.Join("testfixtures", "gitlabMergeCommentEvent_notAllowlisted.json"))
+	requestJSON, err := os.ReadFile(filepath.Join("testdata", "gitlabMergeCommentEvent_notAllowlisted.json"))
 	Ok(t, err)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(requestJSON))
 	req.Header.Set(gitlabHeader, "Note Hook")
@@ -229,7 +232,7 @@ func TestPost_GitlabCommentNotAllowlistedWithSilenceErrors(t *testing.T) {
 	e := events_controllers.VCSEventsController{
 		Logger:                       logger,
 		Scope:                        scope,
-		CommentParser:                &events.CommentParser{},
+		CommentParser:                &events.CommentParser{ExecutableName: "atlantis"},
 		GitlabRequestParserValidator: &events_controllers.DefaultGitlabRequestParserValidator{},
 		Parser:                       &events.EventParser{},
 		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab},
@@ -237,7 +240,7 @@ func TestPost_GitlabCommentNotAllowlistedWithSilenceErrors(t *testing.T) {
 		VCSClient:                    vcsClient,
 		SilenceAllowlistErrors:       true,
 	}
-	requestJSON, err := os.ReadFile(filepath.Join("testfixtures", "gitlabMergeCommentEvent_notAllowlisted.json"))
+	requestJSON, err := os.ReadFile(filepath.Join("testdata", "gitlabMergeCommentEvent_notAllowlisted.json"))
 	Ok(t, err)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(requestJSON))
 	req.Header.Set(gitlabHeader, "Note Hook")
@@ -262,13 +265,13 @@ func TestPost_GithubCommentNotAllowlisted(t *testing.T) {
 		Logger:                 logger,
 		Scope:                  scope,
 		GithubRequestValidator: &events_controllers.DefaultGithubRequestValidator{},
-		CommentParser:          &events.CommentParser{},
+		CommentParser:          &events.CommentParser{ExecutableName: "atlantis"},
 		Parser:                 &events.EventParser{},
 		SupportedVCSHosts:      []models.VCSHostType{models.Github},
 		RepoAllowlistChecker:   &events.RepoAllowlistChecker{},
 		VCSClient:              vcsClient,
 	}
-	requestJSON, err := os.ReadFile(filepath.Join("testfixtures", "githubIssueCommentEvent_notAllowlisted.json"))
+	requestJSON, err := os.ReadFile(filepath.Join("testdata", "githubIssueCommentEvent_notAllowlisted.json"))
 	Ok(t, err)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(requestJSON))
 	req.Header.Set("Content-Type", "application/json")
@@ -294,14 +297,14 @@ func TestPost_GithubCommentNotAllowlistedWithSilenceErrors(t *testing.T) {
 		Logger:                 logger,
 		Scope:                  scope,
 		GithubRequestValidator: &events_controllers.DefaultGithubRequestValidator{},
-		CommentParser:          &events.CommentParser{},
+		CommentParser:          &events.CommentParser{ExecutableName: "atlantis"},
 		Parser:                 &events.EventParser{},
 		SupportedVCSHosts:      []models.VCSHostType{models.Github},
 		RepoAllowlistChecker:   &events.RepoAllowlistChecker{},
 		VCSClient:              vcsClient,
 		SilenceAllowlistErrors: true,
 	}
-	requestJSON, err := os.ReadFile(filepath.Join("testfixtures", "githubIssueCommentEvent_notAllowlisted.json"))
+	requestJSON, err := os.ReadFile(filepath.Join("testdata", "githubIssueCommentEvent_notAllowlisted.json"))
 	Ok(t, err)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(requestJSON))
 	req.Header.Set("Content-Type", "application/json")
@@ -318,7 +321,7 @@ func TestPost_GithubCommentNotAllowlistedWithSilenceErrors(t *testing.T) {
 
 func TestPost_GitlabCommentResponse(t *testing.T) {
 	// When the event is a gitlab comment that warrants a comment response we comment back.
-	e, _, gl, _, _, _, vcsClient, cp := setup(t)
+	e, _, gl, _, _, _, _, vcsClient, cp := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeCommentEvent{}, nil)
@@ -331,7 +334,7 @@ func TestPost_GitlabCommentResponse(t *testing.T) {
 
 func TestPost_GithubCommentResponse(t *testing.T) {
 	t.Log("when the event is a github comment that warrants a comment response we comment back")
-	e, v, _, p, _, _, vcsClient, cp := setup(t)
+	e, v, _, _, p, _, _, vcsClient, cp := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "issue_comment")
 	event := `{"action": "created"}`
@@ -349,7 +352,7 @@ func TestPost_GithubCommentResponse(t *testing.T) {
 
 func TestPost_GitlabCommentSuccess(t *testing.T) {
 	t.Log("when the event is a gitlab comment with a valid command we call the command handler")
-	e, _, gl, _, cr, _, _, _ := setup(t)
+	e, _, gl, _, _, cr, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeCommentEvent{}, nil)
@@ -362,7 +365,7 @@ func TestPost_GitlabCommentSuccess(t *testing.T) {
 
 func TestPost_GithubCommentSuccess(t *testing.T) {
 	t.Log("when the event is a github comment with a valid command we call the command handler")
-	e, v, _, p, cr, _, _, cp := setup(t)
+	e, v, _, _, p, cr, _, _, cp := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "issue_comment")
 	event := `{"action": "created"}`
@@ -379,9 +382,28 @@ func TestPost_GithubCommentSuccess(t *testing.T) {
 	cr.VerifyWasCalledOnce().RunCommentCommand(baseRepo, nil, nil, user, 1, &cmd)
 }
 
+func TestPost_GithubCommentReaction(t *testing.T) {
+	t.Log("when the event is a github comment with a valid command we call the command handler")
+	e, v, _, _, p, _, _, vcsClient, cp := setup(t)
+	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
+	req.Header.Set(githubHeader, "issue_comment")
+	event := `{"action": "created", "comment": {"body": "@atlantis-bot help", "id": 1}}`
+	When(v.Validate(req, secret)).ThenReturn([]byte(event), nil)
+	baseRepo := models.Repo{}
+	user := models.User{}
+	cmd := events.CommentCommand{}
+	When(p.ParseGithubIssueCommentEvent(matchers.AnyPtrToGithubIssueCommentEvent())).ThenReturn(baseRepo, user, 1, nil)
+	When(cp.Parse("", models.Github)).ThenReturn(events.CommentParseResult{Command: &cmd})
+	w := httptest.NewRecorder()
+	e.Post(w, req)
+	ResponseContains(t, w, http.StatusOK, "Processing...")
+
+	vcsClient.VerifyWasCalledOnce().ReactToComment(baseRepo, 1, "eyes")
+}
+
 func TestPost_GithubPullRequestInvalid(t *testing.T) {
 	t.Log("when the event is a github pull request with invalid data we return a 400")
-	e, v, _, p, _, _, _, _ := setup(t)
+	e, v, _, _, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "pull_request")
 
@@ -395,7 +417,7 @@ func TestPost_GithubPullRequestInvalid(t *testing.T) {
 
 func TestPost_GitlabMergeRequestInvalid(t *testing.T) {
 	t.Log("when the event is a gitlab merge request with invalid data we return a 400")
-	e, _, gl, p, _, _, _, _ := setup(t)
+	e, _, gl, _, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeEvent{}, nil)
@@ -409,7 +431,7 @@ func TestPost_GitlabMergeRequestInvalid(t *testing.T) {
 
 func TestPost_GithubPullRequestNotAllowlisted(t *testing.T) {
 	t.Log("when the event is a github pull request to a non-allowlisted repo we return a 400")
-	e, v, _, _, _, _, _, _ := setup(t)
+	e, v, _, _, _, _, _, _, _ := setup(t)
 	var err error
 	e.RepoAllowlistChecker, err = events.NewRepoAllowlistChecker("github.com/nevermatch")
 	Ok(t, err)
@@ -425,7 +447,7 @@ func TestPost_GithubPullRequestNotAllowlisted(t *testing.T) {
 
 func TestPost_GitlabMergeRequestNotAllowlisted(t *testing.T) {
 	t.Log("when the event is a gitlab merge request to a non-allowlisted repo we return a 400")
-	e, _, gl, p, _, _, _, _ := setup(t)
+	e, _, gl, _, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 
@@ -444,7 +466,7 @@ func TestPost_GitlabMergeRequestNotAllowlisted(t *testing.T) {
 
 func TestPost_GithubPullRequestUnsupportedAction(t *testing.T) {
 	t.Skip("relies too much on mocks, should use real event parser")
-	e, v, _, _, _, _, _, _ := setup(t)
+	e, v, _, _, _, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "pull_request")
 
@@ -459,7 +481,7 @@ func TestPost_GithubPullRequestUnsupportedAction(t *testing.T) {
 func TestPost_GitlabMergeRequestUnsupportedAction(t *testing.T) {
 	t.Skip("relies too much on mocks, should use real event parser")
 	t.Log("when the event is a gitlab merge request to a non-allowlisted repo we return a 400")
-	e, _, gl, p, _, _, _, _ := setup(t)
+	e, _, gl, _, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	var event gitlab.MergeEvent
@@ -475,37 +497,8 @@ func TestPost_GitlabMergeRequestUnsupportedAction(t *testing.T) {
 }
 
 func TestPost_AzureDevopsPullRequestIgnoreEvent(t *testing.T) {
-	u := "user"
-	user := []byte(u)
-
 	t.Log("when the event is an azure devops pull request update that should not trigger workflow we ignore it")
-	RegisterMockTestingT(t)
-	v := mocks.NewMockAzureDevopsRequestValidator()
-	p := emocks.NewMockEventParsing()
-	cp := emocks.NewMockCommentParsing()
-	cr := emocks.NewMockCommandRunner()
-	c := emocks.NewMockPullCleaner()
-	vcsmock := vcsmocks.NewMockClient()
-	repoAllowlistChecker, err := events.NewRepoAllowlistChecker("*")
-	Ok(t, err)
-	logger := logging.NewNoopLogger(t)
-	scope, _, _ := metrics.NewLoggingScope(logger, "null")
-	e := events_controllers.VCSEventsController{
-		TestingMode:                     true,
-		Logger:                          logger,
-		Scope:                           scope,
-		ApplyDisabled:                   false,
-		AzureDevopsWebhookBasicUser:     user,
-		AzureDevopsWebhookBasicPassword: secret,
-		AzureDevopsRequestValidator:     v,
-		Parser:                          p,
-		CommentParser:                   cp,
-		CommandRunner:                   cr,
-		PullCleaner:                     c,
-		SupportedVCSHosts:               []models.VCSHostType{models.AzureDevops},
-		RepoAllowlistChecker:            repoAllowlistChecker,
-		VCSClient:                       vcsmock,
-	}
+	e, _, _, ado, _, _, _, _, _ := setup(t)
 
 	event := `{
 		"subscriptionId": "11111111-1111-1111-1111-111111111111",
@@ -546,7 +539,7 @@ func TestPost_AzureDevopsPullRequestIgnoreEvent(t *testing.T) {
 			payload := fmt.Sprintf(event, c.message)
 			req, _ := http.NewRequest("GET", "", strings.NewReader(payload))
 			req.Header.Set(azuredevopsHeader, "reqID")
-			When(v.Validate(req, user, secret)).ThenReturn([]byte(payload), nil)
+			When(ado.Validate(req, user, secret)).ThenReturn([]byte(payload), nil)
 			w := httptest.NewRecorder()
 			e.Parser = &events.EventParser{}
 			e.Post(w, req)
@@ -555,11 +548,178 @@ func TestPost_AzureDevopsPullRequestIgnoreEvent(t *testing.T) {
 	}
 }
 
+func TestPost_AzureDevopsPullRequestDeletedCommentIgnoreEvent(t *testing.T) {
+	t.Log("when the event is an azure devops pull request deleted comment event we ignore it")
+	e, _, _, ado, _, _, _, _, _ := setup(t)
+
+	payload := `{
+		"subscriptionId": "11111111-1111-1111-1111-111111111111",
+		"notificationId": 1,
+		"id": "22222222-2222-2222-2222-222222222222",
+		"eventType": "ms.vss-code.git-pullrequest-comment-event",
+		"publisherId": "tfs",
+		"message": {
+			"text": "Dev has deleted a pull request comment"
+		},
+		"resource": {
+			"comment": {
+				"id": 1,
+				"isDeleted": true,
+				"commentType": "text"
+			}
+		}
+	}`
+
+	t.Run("Dev has deleted a pull request comment", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "", strings.NewReader(payload))
+		req.Header.Set(azuredevopsHeader, "reqID")
+		When(ado.Validate(req, user, secret)).ThenReturn([]byte(payload), nil)
+		w := httptest.NewRecorder()
+		e.Parser = &events.EventParser{}
+		e.Post(w, req)
+		ResponseContains(t, w, http.StatusOK, "Ignoring comment event since it is linked to deleting a pull request comment")
+	})
+}
+
+func TestPost_AzureDevopsPullRequestCommentWebhookTestIgnoreEvent(t *testing.T) {
+	t.Log("when the event is an azure devops webhook test we ignore it")
+	e, _, _, ado, _, _, _, _, _ := setup(t)
+
+	event := `{
+		"subscriptionId": "11111111-1111-1111-1111-111111111111",
+		"notificationId": 1,
+		"id": "22222222-2222-2222-2222-222222222222",
+		"eventType": "%s",
+		"publisherId": "tfs",
+		"message": {
+			"text": "%s"
+		},
+		"resource": {
+			"pullRequest": {
+				"repository":{
+					"url": "https://fabrikam.visualstudio.com/DefaultCollection/_apis/git/repositories/4bc14d40-c903-45e2-872e-0462c7748079"
+				}
+			},
+			"comment": {
+				"content": "This is my comment."
+			}
+		}}`
+
+	cases := []struct {
+		eventType string
+		message   string
+	}{
+		{
+			"ms.vss-code.git-pullrequest-comment-event",
+			"Jamal Hartnett has edited a pull request comment",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.message, func(t *testing.T) {
+			payload := fmt.Sprintf(event, c.eventType, c.message)
+			req, _ := http.NewRequest("GET", "", strings.NewReader(payload))
+			req.Header.Set(azuredevopsHeader, "reqID")
+			When(ado.Validate(req, user, secret)).ThenReturn([]byte(payload), nil)
+			w := httptest.NewRecorder()
+			e.Parser = &events.EventParser{}
+			e.Post(w, req)
+			ResponseContains(t, w, http.StatusOK, "Ignoring Azure DevOps Test Event with Repo URL")
+		})
+	}
+}
+
+func TestPost_AzureDevopsPullRequestWebhookTestIgnoreEvent(t *testing.T) {
+	t.Log("when the event is an azure devops webhook tests we ignore it")
+	e, _, _, ado, _, _, _, _, _ := setup(t)
+
+	event := `{
+		"subscriptionId": "11111111-1111-1111-1111-111111111111",
+		"notificationId": 1,
+		"id": "22222222-2222-2222-2222-222222222222",
+		"eventType": "%s",
+		"publisherId": "tfs",
+		"message": {
+			"text": "%s"
+		},
+		"resource": {
+			"repository":{
+				"url": "https://fabrikam.visualstudio.com/DefaultCollection/_apis/git/repositories/4bc14d40-c903-45e2-872e-0462c7748079"
+			}
+		}}`
+
+	cases := []struct {
+		eventType string
+		message   string
+	}{
+		{
+			"git.pullrequest.created",
+			"Jamal Hartnett created a new pull request",
+		},
+		{
+			"git.pullrequest.updated",
+			"Jamal Hartnett marked the pull request as completed",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.message, func(t *testing.T) {
+			payload := fmt.Sprintf(event, c.eventType, c.message)
+			req, _ := http.NewRequest("GET", "", strings.NewReader(payload))
+			req.Header.Set(azuredevopsHeader, "reqID")
+			When(ado.Validate(req, user, secret)).ThenReturn([]byte(payload), nil)
+			w := httptest.NewRecorder()
+			e.Parser = &events.EventParser{}
+			e.Post(w, req)
+			ResponseContains(t, w, http.StatusOK, "Ignoring Azure DevOps Test Event with Repo URL")
+		})
+	}
+}
+
+func TestPost_AzureDevopsPullRequestCommentPassingIgnores(t *testing.T) {
+	t.Log("when the event should not be ignored it should pass through all ignore statements without error")
+	e, _, _, ado, _, _, _, _, _ := setup(t)
+
+	repo := models.Repo{}
+	When(e.Parser.ParseAzureDevopsRepo(matchers.AnyPtrToAzuredevopsGitRepository())).ThenReturn(repo, nil)
+
+	payload := `{
+		"subscriptionId": "11111111-1111-1111-1111-111111111111",
+		"notificationId": 1,
+		"id": "22222222-2222-2222-2222-222222222222",
+		"eventType": "ms.vss-code.git-pullrequest-comment-event",
+		"publisherId": "tfs",
+		"message": {
+			"text": "Testing to see if comment passes ignore conditions"
+		},
+		"resource": {
+			"comment": {
+				"id": 1,
+				"commentType": "text",
+				"content": "test"
+			},
+			"pullRequest": {
+				"pullRequestId": 1,
+				"repository": {}
+			}
+		}
+	}`
+
+	t.Run("Testing to see if comment passes ignore conditions", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "", strings.NewReader(payload))
+		req.Header.Set(azuredevopsHeader, "reqID")
+		When(ado.Validate(req, user, secret)).ThenReturn([]byte(payload), nil)
+		w := httptest.NewRecorder()
+		e.Post(w, req)
+		ResponseContains(t, w, http.StatusOK, "Processing...")
+	})
+}
+
 func TestPost_GithubPullRequestClosedErrCleaningPull(t *testing.T) {
 	t.Skip("relies too much on mocks, should use real event parser")
 	t.Log("when the event is a closed pull request and we have an error calling CleanUpPull we return a 503")
 	RegisterMockTestingT(t)
-	e, v, _, p, _, c, _, _ := setup(t)
+	e, v, _, _, p, _, c, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "pull_request")
 
@@ -577,7 +737,7 @@ func TestPost_GithubPullRequestClosedErrCleaningPull(t *testing.T) {
 func TestPost_GitlabMergeRequestClosedErrCleaningPull(t *testing.T) {
 	t.Skip("relies too much on mocks, should use real event parser")
 	t.Log("when the event is a closed gitlab merge request and an error occurs calling CleanUpPull we return a 500")
-	e, _, gl, p, _, c, _, _ := setup(t)
+	e, _, gl, _, p, _, c, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	var event gitlab.MergeEvent
@@ -595,7 +755,7 @@ func TestPost_GitlabMergeRequestClosedErrCleaningPull(t *testing.T) {
 func TestPost_GithubClosedPullRequestSuccess(t *testing.T) {
 	t.Skip("relies too much on mocks, should use real event parser")
 	t.Log("when the event is a pull request and everything works we return a 200")
-	e, v, _, p, _, c, _, _ := setup(t)
+	e, v, _, _, p, _, c, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "pull_request")
 
@@ -613,7 +773,7 @@ func TestPost_GithubClosedPullRequestSuccess(t *testing.T) {
 func TestPost_GitlabMergeRequestSuccess(t *testing.T) {
 	t.Skip("relies too much on mocks, should use real event parser")
 	t.Log("when the event is a gitlab merge request and the cleanup works we return a 200")
-	e, _, gl, p, _, _, _, _ := setup(t)
+	e, _, gl, _, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
 	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeEvent{}, nil)
@@ -664,7 +824,7 @@ func TestPost_BBServerPullClosed(t *testing.T) {
 			}
 
 			// Build HTTP request.
-			requestBytes, err := os.ReadFile(filepath.Join("testfixtures", "bb-server-pull-deleted-event.json"))
+			requestBytes, err := os.ReadFile(filepath.Join("testdata", "bb-server-pull-deleted-event.json"))
 			// Replace the eventKey field with our event type.
 			requestJSON := strings.Replace(string(requestBytes), `"eventKey":"pr:deleted",`, fmt.Sprintf(`"eventKey":"%s",`, c.header), -1)
 			Ok(t, err)
@@ -697,7 +857,7 @@ func TestPost_BBServerPullClosed(t *testing.T) {
 				HeadCommit: "2d9fb6b9a46eafb1dcef7b008d1a429d45ca742c",
 				URL:        "https://bbserver.com/projects/PROJ/repos/repository/pull-requests/10",
 				HeadBranch: "decline-me",
-				BaseBranch: "master",
+				BaseBranch: "main",
 				Author:     "admin",
 				State:      models.OpenPullState,
 				BaseRepo:   expRepo,
@@ -736,7 +896,7 @@ func TestPost_PullOpenedOrUpdated(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.Description, func(t *testing.T) {
-			e, v, gl, p, cr, _, _, _ := setup(t)
+			e, v, gl, _, p, cr, _, _, _ := setup(t)
 			req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 			var pullRequest models.PullRequest
 			var repo models.Repo
@@ -767,10 +927,11 @@ func TestPost_PullOpenedOrUpdated(t *testing.T) {
 	}
 }
 
-func setup(t *testing.T) (events_controllers.VCSEventsController, *mocks.MockGithubRequestValidator, *mocks.MockGitlabRequestParserValidator, *emocks.MockEventParsing, *emocks.MockCommandRunner, *emocks.MockPullCleaner, *vcsmocks.MockClient, *emocks.MockCommentParsing) {
+func setup(t *testing.T) (events_controllers.VCSEventsController, *mocks.MockGithubRequestValidator, *mocks.MockGitlabRequestParserValidator, *mocks.MockAzureDevopsRequestValidator, *emocks.MockEventParsing, *emocks.MockCommandRunner, *emocks.MockPullCleaner, *vcsmocks.MockClient, *emocks.MockCommentParsing) {
 	RegisterMockTestingT(t)
 	v := mocks.NewMockGithubRequestValidator()
 	gl := mocks.NewMockGitlabRequestParserValidator()
+	ado := mocks.NewMockAzureDevopsRequestValidator()
 	p := emocks.NewMockEventParsing()
 	cp := emocks.NewMockCommentParsing()
 	cr := emocks.NewMockCommandRunner()
@@ -781,20 +942,26 @@ func setup(t *testing.T) (events_controllers.VCSEventsController, *mocks.MockGit
 	logger := logging.NewNoopLogger(t)
 	scope, _, _ := metrics.NewLoggingScope(logger, "null")
 	e := events_controllers.VCSEventsController{
-		TestingMode:                  true,
-		Logger:                       logger,
-		Scope:                        scope,
-		GithubRequestValidator:       v,
-		Parser:                       p,
-		CommentParser:                cp,
-		CommandRunner:                cr,
-		PullCleaner:                  c,
-		GithubWebhookSecret:          secret,
-		SupportedVCSHosts:            []models.VCSHostType{models.Github, models.Gitlab},
-		GitlabWebhookSecret:          secret,
-		GitlabRequestParserValidator: gl,
-		RepoAllowlistChecker:         repoAllowlistChecker,
-		VCSClient:                    vcsmock,
+		ExecutableName:                  "atlantis",
+		EmojiReaction:                   "eyes",
+		TestingMode:                     true,
+		Logger:                          logger,
+		Scope:                           scope,
+		ApplyDisabled:                   false,
+		AzureDevopsWebhookBasicUser:     user,
+		AzureDevopsWebhookBasicPassword: secret,
+		AzureDevopsRequestValidator:     ado,
+		GithubRequestValidator:          v,
+		Parser:                          p,
+		CommentParser:                   cp,
+		CommandRunner:                   cr,
+		PullCleaner:                     c,
+		GithubWebhookSecret:             secret,
+		SupportedVCSHosts:               []models.VCSHostType{models.Github, models.Gitlab, models.AzureDevops},
+		GitlabWebhookSecret:             secret,
+		GitlabRequestParserValidator:    gl,
+		RepoAllowlistChecker:            repoAllowlistChecker,
+		VCSClient:                       vcsmock,
 	}
-	return e, v, gl, p, cr, c, vcsmock, cp
+	return e, v, gl, ado, p, cr, c, vcsmock, cp
 }

@@ -22,13 +22,14 @@ import (
 	"testing"
 
 	homedir "github.com/mitchellh/go-homedir"
-	"github.com/runatlantis/atlantis/server"
-	"github.com/runatlantis/atlantis/server/events/vcs/fixtures"
-	"github.com/runatlantis/atlantis/server/logging"
-	. "github.com/runatlantis/atlantis/testing"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
+
+	"github.com/runatlantis/atlantis/server"
+	"github.com/runatlantis/atlantis/server/events/vcs/testdata"
+	"github.com/runatlantis/atlantis/server/logging"
+	. "github.com/runatlantis/atlantis/testing"
 )
 
 // passedConfig is set to whatever config ended up being passed to NewServer.
@@ -51,65 +52,70 @@ func (s *ServerStarterMock) Start() error {
 // Adding a new flag? Add it to this slice for testing in alphabetical
 // order.
 var testFlags = map[string]interface{}{
-	ADTokenFlag:                "ad-token",
-	ADUserFlag:                 "ad-user",
-	ADWebhookPasswordFlag:      "ad-wh-pass",
-	ADWebhookUserFlag:          "ad-wh-user",
-	AtlantisURLFlag:            "url",
-	AllowForkPRsFlag:           true,
-	AllowRepoConfigFlag:        true,
-	AutomergeFlag:              true,
-	AutoplanFileListFlag:       "**/*.tf,**/*.yml",
-	BitbucketBaseURLFlag:       "https://bitbucket-base-url.com",
-	BitbucketTokenFlag:         "bitbucket-token",
-	BitbucketUserFlag:          "bitbucket-user",
-	BitbucketWebhookSecretFlag: "bitbucket-secret",
-	CheckoutStrategyFlag:       "merge",
-	DataDirFlag:                "/path",
-	DefaultTFVersionFlag:       "v0.11.0",
-	DisableApplyAllFlag:        true,
-	DisableApplyFlag:           true,
-	DisableMarkdownFoldingFlag: true,
-	DisableRepoLockingFlag:     true,
-	GHHostnameFlag:             "ghhostname",
-	GHTokenFlag:                "token",
-	GHUserFlag:                 "user",
-	GHAppIDFlag:                int64(0),
-	GHAppKeyFlag:               "",
-	GHAppKeyFileFlag:           "",
-	GHAppSlugFlag:              "atlantis",
-	GHOrganizationFlag:         "",
-	GHWebhookSecretFlag:        "secret",
-	GitlabHostnameFlag:         "gitlab-hostname",
-	GitlabTokenFlag:            "gitlab-token",
-	GitlabUserFlag:             "gitlab-user",
-	GitlabWebhookSecretFlag:    "gitlab-secret",
-	LogLevelFlag:               "debug",
-	StatsNamespace:             "atlantis",
-	AllowDraftPRs:              true,
-	PortFlag:                   8181,
-	ParallelPoolSize:           100,
-	RepoAllowlistFlag:          "github.com/runatlantis/atlantis",
-	RequireApprovalFlag:        true,
-	RequireMergeableFlag:       true,
-	SilenceNoProjectsFlag:      false,
-	SilenceForkPRErrorsFlag:    true,
-	SilenceAllowlistErrorsFlag: true,
-	SilenceVCSStatusNoPlans:    true,
-	SkipCloneNoChanges:         true,
-	SlackTokenFlag:             "slack-token",
-	SSLCertFileFlag:            "cert-file",
-	SSLKeyFileFlag:             "key-file",
-	TFDownloadURLFlag:          "https://my-hostname.com",
-	TFEHostnameFlag:            "my-hostname",
-	TFELocalExecutionModeFlag:  true,
-	TFETokenFlag:               "my-token",
-	VCSStatusName:              "my-status",
-	WriteGitCredsFlag:          true,
-	DisableAutoplanFlag:        true,
-	EnablePolicyChecksFlag:     false,
-	EnableRegExpCmdFlag:        false,
-	EnableDiffMarkdownFormat:   false,
+	ADTokenFlag:                      "ad-token",
+	ADUserFlag:                       "ad-user",
+	ADWebhookPasswordFlag:            "ad-wh-pass",
+	ADWebhookUserFlag:                "ad-wh-user",
+	AtlantisURLFlag:                  "url",
+	AllowCommandsFlag:                "version,plan,unlock,import,approve_policies", // apply is disabled by DisableApply
+	AllowForkPRsFlag:                 true,
+	AllowRepoConfigFlag:              true,
+	AutomergeFlag:                    true,
+	AutoplanFileListFlag:             "**/*.tf,**/*.yml",
+	BitbucketBaseURLFlag:             "https://bitbucket-base-url.com",
+	BitbucketTokenFlag:               "bitbucket-token",
+	BitbucketUserFlag:                "bitbucket-user",
+	BitbucketWebhookSecretFlag:       "bitbucket-secret",
+	CheckoutStrategyFlag:             "merge",
+	DataDirFlag:                      "/path",
+	DefaultTFVersionFlag:             "v0.11.0",
+	DisableApplyAllFlag:              true,
+	DisableApplyFlag:                 true,
+	DisableMarkdownFoldingFlag:       true,
+	DisableRepoLockingFlag:           true,
+	DiscardApprovalOnPlanFlag:        true,
+	GHHostnameFlag:                   "ghhostname",
+	GHTokenFlag:                      "token",
+	GHUserFlag:                       "user",
+	GHAppIDFlag:                      int64(0),
+	GHAppKeyFlag:                     "",
+	GHAppKeyFileFlag:                 "",
+	GHAppSlugFlag:                    "atlantis",
+	GHOrganizationFlag:               "",
+	GHWebhookSecretFlag:              "secret",
+	GitlabHostnameFlag:               "gitlab-hostname",
+	GitlabTokenFlag:                  "gitlab-token",
+	GitlabUserFlag:                   "gitlab-user",
+	GitlabWebhookSecretFlag:          "gitlab-secret",
+	LockingDBType:                    "boltdb",
+	LogLevelFlag:                     "debug",
+	MarkdownTemplateOverridesDirFlag: "/path2",
+	StatsNamespace:                   "atlantis",
+	AllowDraftPRs:                    true,
+	PortFlag:                         8181,
+	ParallelPoolSize:                 100,
+	RepoAllowlistFlag:                "github.com/runatlantis/atlantis",
+	RequireApprovalFlag:              true,
+	RequireMergeableFlag:             true,
+	SilenceNoProjectsFlag:            false,
+	SilenceForkPRErrorsFlag:          true,
+	SilenceAllowlistErrorsFlag:       true,
+	SilenceVCSStatusNoPlans:          true,
+	SkipCloneNoChanges:               true,
+	SlackTokenFlag:                   "slack-token",
+	SSLCertFileFlag:                  "cert-file",
+	SSLKeyFileFlag:                   "key-file",
+	RestrictFileList:                 false,
+	TFDownloadURLFlag:                "https://my-hostname.com",
+	TFEHostnameFlag:                  "my-hostname",
+	TFELocalExecutionModeFlag:        true,
+	TFETokenFlag:                     "my-token",
+	VCSStatusName:                    "my-status",
+	WriteGitCredsFlag:                true,
+	DisableAutoplanFlag:              true,
+	EnablePolicyChecksFlag:           false,
+	EnableRegExpCmdFlag:              false,
+	EnableDiffMarkdownFormat:         false,
 }
 
 func TestExecute_Defaults(t *testing.T) {
@@ -127,17 +133,20 @@ func TestExecute_Defaults(t *testing.T) {
 	hostname, err := os.Hostname()
 	Ok(t, err)
 
-	// Get our home dir since that's what data-dir defaulted to.
+	// Get our home dir since that's what data-dir and markdown-template-overrides-dir defaulted to.
 	dataDir, err := homedir.Expand("~/.atlantis")
+	Ok(t, err)
+	markdownTemplateOverridesDir, err := homedir.Expand("~/.markdown_templates")
 	Ok(t, err)
 
 	strExceptions := map[string]string{
-		GHUserFlag:           "user",
-		GHTokenFlag:          "token",
-		DataDirFlag:          dataDir,
-		AtlantisURLFlag:      "http://" + hostname + ":4141",
-		RepoAllowlistFlag:    "*",
-		VarFileAllowlistFlag: dataDir,
+		GHUserFlag:                       "user",
+		GHTokenFlag:                      "token",
+		DataDirFlag:                      dataDir,
+		MarkdownTemplateOverridesDirFlag: markdownTemplateOverridesDir,
+		AtlantisURLFlag:                  "http://" + hostname + ":4141",
+		RepoAllowlistFlag:                "*",
+		VarFileAllowlistFlag:             dataDir,
 	}
 	strIgnore := map[string]bool{
 		"config": true,
@@ -418,7 +427,7 @@ func TestExecute_ValidateVCSConfig(t *testing.T) {
 		{
 			"just github app key set",
 			map[string]interface{}{
-				GHAppKeyFlag: fixtures.GithubPrivateKey,
+				GHAppKeyFlag: testdata.GithubPrivateKey,
 			},
 			true,
 		},
@@ -487,7 +496,7 @@ func TestExecute_ValidateVCSConfig(t *testing.T) {
 			"github app and key set and should be successful",
 			map[string]interface{}{
 				GHAppIDFlag:  "1",
-				GHAppKeyFlag: fixtures.GithubPrivateKey,
+				GHAppKeyFlag: testdata.GithubPrivateKey,
 			},
 			false,
 		},
@@ -545,6 +554,36 @@ func TestExecute_ValidateVCSConfig(t *testing.T) {
 	}
 }
 
+func TestExecute_ValidateAllowCommands(t *testing.T) {
+	cases := []struct {
+		name              string
+		allowCommandsFlag string
+		expErr            string
+	}{
+		{
+			name:              "invalid allow commands",
+			allowCommandsFlag: "noallow",
+			expErr:            "invalid --allow-commands: unknown command name: noallow",
+		},
+		{
+			name:              "success with empty allow commands",
+			allowCommandsFlag: "",
+			expErr:            "",
+		},
+	}
+	for _, testCase := range cases {
+		c := setupWithDefaults(map[string]interface{}{
+			AllowCommandsFlag: testCase.allowCommandsFlag,
+		}, t)
+		err := c.Execute()
+		if testCase.expErr != "" {
+			ErrEquals(t, testCase.expErr, err)
+		} else {
+			Ok(t, err)
+		}
+	}
+}
+
 func TestExecute_ExpandHomeInDataDir(t *testing.T) {
 	t.Log("If ~ is used as a data-dir path, should expand to absolute home path")
 	c := setup(map[string]interface{}{
@@ -592,7 +631,7 @@ func TestExecute_GithubUser(t *testing.T) {
 func TestExecute_GithubApp(t *testing.T) {
 	t.Log("Should remove the @ from the github username if it's passed.")
 	c := setup(map[string]interface{}{
-		GHAppKeyFlag:      fixtures.GithubPrivateKey,
+		GHAppKeyFlag:      testdata.GithubPrivateKey,
 		GHAppIDFlag:       "1",
 		RepoAllowlistFlag: "*",
 	}, t)
@@ -744,6 +783,16 @@ func TestExecute_BothSilenceAllowAndWhitelistErrors(t *testing.T) {
 	ErrEquals(t, "both --silence-allowlist-errors and --silence-whitelist-errors cannot be set–use --silence-allowlist-errors", err)
 }
 
+func TestExecute_DisableApplyDeprecation(t *testing.T) {
+	c := setupWithDefaults(map[string]interface{}{
+		DisableApplyFlag:  true,
+		AllowCommandsFlag: "plan,apply,unlock",
+	}, t)
+	err := c.Execute()
+	Ok(t, err)
+	Equals(t, "plan,unlock", passedConfig.AllowCommands)
+}
+
 // Test that we set the corresponding allow list values on the userConfig
 // struct if the deprecated whitelist flags are used.
 func TestExecute_RepoWhitelistDeprecation(t *testing.T) {
@@ -757,6 +806,23 @@ func TestExecute_RepoWhitelistDeprecation(t *testing.T) {
 	Ok(t, err)
 	Equals(t, true, passedConfig.SilenceAllowlistErrors)
 	Equals(t, "*", passedConfig.RepoAllowlist)
+}
+
+func TestExecute_AutoDetectModulesFromProjects_Env(t *testing.T) {
+	t.Setenv("ATLANTIS_AUTOPLAN_MODULES_FROM_PROJECTS", "**/init.tf")
+	c := setupWithDefaults(map[string]interface{}{}, t)
+	err := c.Execute()
+	Ok(t, err)
+	Equals(t, "**/init.tf", passedConfig.AutoplanModulesFromProjects)
+}
+
+func TestExecute_AutoDetectModulesFromProjects(t *testing.T) {
+	c := setupWithDefaults(map[string]interface{}{
+		AutoplanModulesFromProjects: "**/*.tf",
+	}, t)
+	err := c.Execute()
+	Ok(t, err)
+	Equals(t, "**/*.tf", passedConfig.AutoplanModulesFromProjects)
 }
 
 func TestExecute_AutoplanFileList(t *testing.T) {

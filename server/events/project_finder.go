@@ -14,17 +14,25 @@
 package events
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/runatlantis/atlantis/server/core/config/valid"
+	"github.com/runatlantis/atlantis/server/utils"
 
-	"github.com/moby/moby/pkg/fileutils"
+	"github.com/moby/patternmatcher"
 	"github.com/pkg/errors"
+
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
 // ProjectFinder determines which projects were modified in a given pull
@@ -33,11 +41,93 @@ type ProjectFinder interface {
 	// DetermineProjects returns the list of projects that were modified based on
 	// the modifiedFiles. The list will be de-duplicated.
 	// absRepoDir is the path to the cloned repo on disk.
-	DetermineProjects(log logging.SimpleLogging, modifiedFiles []string, repoFullName string, absRepoDir string, autoplanFileList string) []models.Project
+	DetermineProjects(log logging.SimpleLogging, modifiedFiles []string, repoFullName string, absRepoDir string, autoplanFileList string, moduleInfo ModuleProjects) []models.Project
 	// DetermineProjectsViaConfig returns the list of projects that were modified
 	// based on modifiedFiles and the repo's config.
 	// absRepoDir is the path to the cloned repo on disk.
-	DetermineProjectsViaConfig(log logging.SimpleLogging, modifiedFiles []string, config valid.RepoCfg, absRepoDir string) ([]valid.Project, error)
+	DetermineProjectsViaConfig(log logging.SimpleLogging, modifiedFiles []string, config valid.RepoCfg, absRepoDir string, moduleInfo ModuleProjects) ([]valid.Project, error)
+
+	DetermineWorkspaceFromHCL(log logging.SimpleLogging, absRepoDir string) (string, error)
+}
+
+var rootBlockSchema = &hcl.BodySchema{
+	Blocks: []hcl.BlockHeaderSchema{
+		{
+			Type:       "terraform",
+			LabelNames: nil,
+		},
+	},
+}
+
+var terraformBlockSchema = &hcl.BodySchema{
+	Blocks: []hcl.BlockHeaderSchema{
+		{
+			Type: "cloud",
+		},
+	},
+}
+
+var cloudBlockSchema = &hcl.BodySchema{
+	Blocks: []hcl.BlockHeaderSchema{
+		{
+			Type: "workspaces",
+		},
+	},
+}
+
+func (p *DefaultProjectFinder) DetermineWorkspaceFromHCL(log logging.SimpleLogging, absRepoDir string) (string, error) {
+	log.Info("looking for Terraform Cloud workspace from configuration in %q", absRepoDir)
+	infos, err := os.ReadDir(absRepoDir)
+	if err != nil {
+		return "", err
+	}
+	parser := hclparse.NewParser()
+	for _, info := range infos {
+		if info.IsDir() {
+			continue
+		}
+
+		name := info.Name()
+		if strings.HasSuffix(name, ".tf") {
+			fullPath := filepath.Join(absRepoDir, name)
+			file, _ := parser.ParseHCLFile(fullPath)
+			workspace, err := findTFCloudWorkspaceFromFile(file)
+			if err != nil {
+				log.Warn(err.Error())
+				return DefaultWorkspace, nil
+			}
+
+			if len(workspace) > 0 {
+				log.Debug("found configured Terraform Cloud workspace with name %q", workspace)
+				return workspace, nil
+			}
+		}
+	}
+
+	log.Debug("no Terraform Cloud workspace explicitly configured in Terraform codes. Use default workspace (%q)", DefaultWorkspace)
+	return DefaultWorkspace, nil
+}
+
+func findTFCloudWorkspaceFromFile(file *hcl.File) (string, error) {
+	content, _, _ := file.Body.PartialContent(rootBlockSchema)
+	workspace := ""
+
+	if len(content.Blocks) == 1 {
+		content, _, _ = content.Blocks[0].Body.PartialContent(terraformBlockSchema)
+		if len(content.Blocks) == 1 {
+			content, _, _ = content.Blocks[0].Body.PartialContent(cloudBlockSchema)
+			if len(content.Blocks) == 1 {
+				attrs, _ := content.Blocks[0].Body.JustAttributes()
+				if nameAttr, defined := attrs["name"]; defined {
+					diags := gohcl.DecodeExpression(nameAttr.Expr, nil, &workspace)
+					if diags.HasErrors() {
+						return "", fmt.Errorf("unable to parse workspace configuration: %q", diags.Error())
+					}
+				}
+			}
+		}
+	}
+	return workspace, nil
 }
 
 // ignoredFilenameFragments contains filename fragments to ignore while looking at changes
@@ -47,7 +137,7 @@ var ignoredFilenameFragments = []string{"terraform.tfstate", "terraform.tfstate.
 type DefaultProjectFinder struct{}
 
 // See ProjectFinder.DetermineProjects.
-func (p *DefaultProjectFinder) DetermineProjects(log logging.SimpleLogging, modifiedFiles []string, repoFullName string, absRepoDir string, autoplanFileList string) []models.Project {
+func (p *DefaultProjectFinder) DetermineProjects(log logging.SimpleLogging, modifiedFiles []string, repoFullName string, absRepoDir string, autoplanFileList string, moduleInfo ModuleProjects) []models.Project {
 	var projects []models.Project
 
 	modifiedTerraformFiles := p.filterToFileList(log, modifiedFiles, autoplanFileList)
@@ -59,9 +149,13 @@ func (p *DefaultProjectFinder) DetermineProjects(log logging.SimpleLogging, modi
 
 	var dirs []string
 	for _, modifiedFile := range modifiedTerraformFiles {
-		projectDir := p.getProjectDir(modifiedFile, absRepoDir)
+		projectDir := getProjectDir(modifiedFile, absRepoDir)
 		if projectDir != "" {
 			dirs = append(dirs, projectDir)
+		} else if moduleInfo != nil {
+			downstreamProjects := moduleInfo.DependentProjects(path.Dir(modifiedFile))
+			log.Debug("found downstream projects for %q: %v", modifiedFile, downstreamProjects)
+			dirs = append(dirs, downstreamProjects...)
 		}
 	}
 	uniqueDirs := p.unique(dirs)
@@ -81,10 +175,27 @@ func (p *DefaultProjectFinder) DetermineProjects(log logging.SimpleLogging, modi
 }
 
 // See ProjectFinder.DetermineProjectsViaConfig.
-func (p *DefaultProjectFinder) DetermineProjectsViaConfig(log logging.SimpleLogging, modifiedFiles []string, config valid.RepoCfg, absRepoDir string) ([]valid.Project, error) {
+func (p *DefaultProjectFinder) DetermineProjectsViaConfig(log logging.SimpleLogging, modifiedFiles []string, config valid.RepoCfg, absRepoDir string, moduleInfo ModuleProjects) ([]valid.Project, error) {
+
+	// Check moduleInfo for downstream project dependencies
+	var dependentProjects []string
+	for _, file := range modifiedFiles {
+		if moduleInfo != nil {
+			downstreamProjects := moduleInfo.DependentProjects(path.Dir(file))
+			log.Debug("found downstream projects for %q: %v", file, downstreamProjects)
+			dependentProjects = append(dependentProjects, downstreamProjects...)
+		}
+	}
+
 	var projects []valid.Project
 	for _, project := range config.Projects {
 		log.Debug("checking if project at dir %q workspace %q was modified", project.Dir, project.Workspace)
+
+		if utils.SlicesContains(dependentProjects, project.Dir) {
+			projects = append(projects, project)
+			continue
+		}
+
 		var whenModifiedRelToRepoRoot []string
 		for _, wm := range project.Autoplan.WhenModified {
 			wm = strings.TrimSpace(wm)
@@ -105,7 +216,7 @@ func (p *DefaultProjectFinder) DetermineProjectsViaConfig(log logging.SimpleLogg
 			}
 			whenModifiedRelToRepoRoot = append(whenModifiedRelToRepoRoot, wmRelPath)
 		}
-		pm, err := fileutils.NewPatternMatcher(whenModifiedRelToRepoRoot)
+		pm, err := patternmatcher.New(whenModifiedRelToRepoRoot)
 		if err != nil {
 			return nil, errors.Wrapf(err, "matching modified files with patterns: %v", project.Autoplan.WhenModified)
 		}
@@ -149,7 +260,7 @@ func (p *DefaultProjectFinder) filterToFileList(log logging.SimpleLogging, files
 	var filtered []string
 	patterns := strings.Split(fileList, ",")
 	// Ignore pattern matcher error here as it was checked for errors in server validation
-	patternMatcher, _ := fileutils.NewPatternMatcher(patterns)
+	patternMatcher, _ := patternmatcher.New(patterns)
 
 	for _, fileName := range files {
 		if p.shouldIgnore(fileName) {
@@ -183,7 +294,11 @@ func (p *DefaultProjectFinder) shouldIgnore(fileName string) bool {
 // if the root is valid by looking for a main.tf file. It returns a relative
 // path to the repo. If the project is at the root returns ".". If modified file
 // doesn't lead to a valid project path, returns an empty string.
-func (p *DefaultProjectFinder) getProjectDir(modifiedFilePath string, repoDir string) string {
+func getProjectDir(modifiedFilePath string, repoDir string) string {
+	return getProjectDirFromFs(os.DirFS(repoDir), modifiedFilePath)
+}
+
+func getProjectDirFromFs(files fs.FS, modifiedFilePath string) string {
 	dir := path.Dir(modifiedFilePath)
 	if path.Base(dir) == "env" {
 		// If the modified file was inside an env/ directory, we treat this
@@ -199,7 +314,7 @@ func (p *DefaultProjectFinder) getProjectDir(modifiedFilePath string, repoDir st
 
 	// Surrounding dir with /'s so we can match on /modules/ even if dir is
 	// "modules" or "project1/modules"
-	if strings.Contains("/"+dir+"/", "/modules/") {
+	if isModule(dir) {
 		// We treat changes inside modules/ folders specially. There are two cases:
 		// 1. modules folder inside project:
 		// root/
@@ -231,7 +346,7 @@ func (p *DefaultProjectFinder) getProjectDir(modifiedFilePath string, repoDir st
 		modulesParent := modulesSplit[0]
 
 		// Now we check whether there is a main.tf in the parent.
-		if _, err := os.Stat(filepath.Join(repoDir, modulesParent, "main.tf")); os.IsNotExist(err) {
+		if _, err := fs.Stat(files, filepath.Join(modulesParent, "main.tf")); errors.Is(err, fs.ErrNotExist) {
 			return ""
 		}
 		return path.Clean(modulesParent)
@@ -240,6 +355,10 @@ func (p *DefaultProjectFinder) getProjectDir(modifiedFilePath string, repoDir st
 	// If it wasn't a modules directory, we assume we're in a project and return
 	// this directory.
 	return dir
+}
+
+func isModule(dir string) bool {
+	return strings.Contains("/"+dir+"/", "/modules/")
 }
 
 // unique de-duplicates strs.

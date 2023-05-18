@@ -12,9 +12,9 @@ import (
 
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
 
+	validator "github.com/go-playground/validator/v10"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/models"
-	validator "gopkg.in/go-playground/validator.v9"
 )
 
 // maxCommentLength is the maximum number of chars allowed by Bitbucket in a
@@ -145,6 +145,10 @@ func (b *Client) CreateComment(repo models.Repo, pullNum int, comment string, co
 	return nil
 }
 
+func (b *Client) ReactToComment(repo models.Repo, commentID int64, reaction string) error { // nolint: revive
+	return nil
+}
+
 func (b *Client) HidePrevCommandComments(repo models.Repo, pullNum int, command string) error {
 	return nil
 }
@@ -190,6 +194,11 @@ func (b *Client) PullIsApproved(repo models.Repo, pull models.PullRequest) (appr
 		}
 	}
 	return approvalStatus, nil
+}
+
+func (b *Client) DiscardReviews(repo models.Repo, pull models.PullRequest) error {
+	// TODO implement
+	return nil
 }
 
 // PullIsMergeable returns true if the merge request has no conflicts and can be merged.
@@ -300,7 +309,11 @@ func (b *Client) prepRequest(method string, path string, body io.Reader) (*http.
 	if err != nil {
 		return nil, err
 	}
-	req.SetBasicAuth(b.Username, b.Password)
+
+	// Personal access tokens can be sent as basic auth or bearer
+	bearer := "Bearer " + b.Password
+	req.Header.Add("Authorization", bearer)
+
 	if body != nil {
 		req.Header.Add("Content-Type", "application/json")
 	}
@@ -342,10 +355,10 @@ func (b *Client) SupportsSingleFileDownload(repo models.Repo) bool {
 	return false
 }
 
-// DownloadRepoConfigFile return `atlantis.yaml` content from VCS (which support fetch a single file from repository)
-// The first return value indicate that repo contain atlantis.yaml or not
-// if BaseRepo had one repo config file, its content will placed on the second return value
-func (b *Client) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
+// GetFileContent a repository file content from VCS (which support fetch a single file from repository)
+// The first return value indicates whether the repo contains a file or not
+// if BaseRepo had a file, its content will placed on the second return value
+func (b *Client) GetFileContent(pull models.PullRequest, fileName string) (bool, []byte, error) {
 	return false, []byte{}, fmt.Errorf("not implemented")
 }
 

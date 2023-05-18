@@ -3,7 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the License);
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-//    http://www.apache.org/licenses/LICENSE-2.0
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an AS IS BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,7 +26,7 @@ import (
 	"github.com/runatlantis/atlantis/server/events/models"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_backend.go Backend
+//go:generate pegomock generate -m --package mocks -o mocks/mock_backend.go Backend
 
 // Backend is an implementation of the locking API we require.
 type Backend interface {
@@ -33,6 +35,10 @@ type Backend interface {
 	List() ([]models.ProjectLock, error)
 	GetLock(project models.Project, workspace string) (*models.ProjectLock, error)
 	UnlockByPull(repoFullName string, pullNum int) ([]models.ProjectLock, error)
+	UpdateProjectStatus(pull models.PullRequest, workspace string, repoRelDir string, newStatus models.ProjectPlanStatus) error
+	GetPullStatus(pull models.PullRequest) (*models.PullStatus, error)
+	DeletePullStatus(pull models.PullRequest) error
+	UpdatePullWithResults(pull models.PullRequest, newResults []command.ProjectResult) (models.PullStatus, error)
 
 	LockCommand(cmdName command.Name, lockTime time.Time) (*command.Lock, error)
 	UnlockCommand(cmdName command.Name) error
@@ -54,7 +60,7 @@ type Client struct {
 	backend Backend
 }
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_locker.go Locker
+//go:generate pegomock generate -m --package mocks -o mocks/mock_locker.go Locker
 
 type Locker interface {
 	TryLock(p models.Project, workspace string, pull models.PullRequest, user models.User) (TryLockResponse, error)

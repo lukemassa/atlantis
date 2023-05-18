@@ -20,7 +20,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/google/go-github/v31/github"
+	"github.com/go-playground/validator/v10"
+	"github.com/google/go-github/v52/github"
 	"github.com/mcdafydd/go-azuredevops/azuredevops"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -28,7 +29,6 @@ import (
 	"github.com/runatlantis/atlantis/server/events/vcs/bitbucketcloud"
 	"github.com/runatlantis/atlantis/server/events/vcs/bitbucketserver"
 	"github.com/xanzy/go-gitlab"
-	"gopkg.in/go-playground/validator.v9"
 )
 
 const gitlabPullOpened = "opened"
@@ -38,6 +38,8 @@ const usagesCols = 90
 type PullCommand interface {
 	// CommandName is the name of the command we're running.
 	CommandName() command.Name
+	// SubCommandName is the subcommand name of the command we're running.
+	SubCommandName() string
 	// IsVerbose is true if the output of this command should be verbose.
 	IsVerbose() bool
 	// IsAutoplan is true if this is an autoplan command vs. a comment command.
@@ -51,6 +53,11 @@ type PolicyCheckCommand struct{}
 // CommandName is policy_check.
 func (c PolicyCheckCommand) CommandName() command.Name {
 	return command.PolicyCheck
+}
+
+// SubCommandName is a subcommand for policy_check.
+func (c PolicyCheckCommand) SubCommandName() string {
+	return ""
 }
 
 // IsVerbose is false for policy_check commands.
@@ -70,6 +77,11 @@ type AutoplanCommand struct{}
 // CommandName is plan.
 func (c AutoplanCommand) CommandName() command.Name {
 	return command.Plan
+}
+
+// SubCommandName is a subcommand for auto plan.
+func (c AutoplanCommand) SubCommandName() string {
+	return ""
 }
 
 // IsVerbose is false for autoplan commands.
@@ -92,6 +104,8 @@ type CommentCommand struct {
 	Flags []string
 	// Name is the name of the command the comment specified.
 	Name command.Name
+	// SubName is the name of the sub command the comment specified.
+	SubName string
 	// AutoMergeDisabled is true if the command should not automerge after apply.
 	AutoMergeDisabled bool
 	// Verbose is true if the command should output verbosely.
@@ -103,6 +117,10 @@ type CommentCommand struct {
 	// project specified in an atlantis.yaml file.
 	// If empty then the comment specified no project.
 	ProjectName string
+	// PolicySet is the name of a policy set to run an approval on.
+	PolicySet string
+	// ClearPolicyApproval is true if approvals should be cleared out for specified policies.
+	ClearPolicyApproval bool
 }
 
 // IsForSpecificProject returns true if the command is for a specific dir, workspace
@@ -117,6 +135,11 @@ func (c CommentCommand) CommandName() command.Name {
 	return c.Name
 }
 
+// SubCommandName returns the name of this subcommand.
+func (c CommentCommand) SubCommandName() string {
+	return c.SubName
+}
+
 // IsVerbose is true if the command should give verbose output.
 func (c CommentCommand) IsVerbose() bool {
 	return c.Verbose
@@ -129,11 +152,11 @@ func (c CommentCommand) IsAutoplan() bool {
 
 // String returns a string representation of the command.
 func (c CommentCommand) String() string {
-	return fmt.Sprintf("command=%q verbose=%t dir=%q workspace=%q project=%q flags=%q", c.Name.String(), c.Verbose, c.RepoRelDir, c.Workspace, c.ProjectName, strings.Join(c.Flags, ","))
+	return fmt.Sprintf("command=%q verbose=%t dir=%q workspace=%q project=%q policyset=%q, clear-policy-approval=%t, flags=%q", c.Name.String(), c.Verbose, c.RepoRelDir, c.Workspace, c.ProjectName, c.PolicySet, c.ClearPolicyApproval, strings.Join(c.Flags, ","))
 }
 
 // NewCommentCommand constructs a CommentCommand, setting all missing fields to defaults.
-func NewCommentCommand(repoRelDir string, flags []string, name command.Name, verbose, autoMergeDisabled bool, workspace string, project string) *CommentCommand {
+func NewCommentCommand(repoRelDir string, flags []string, name command.Name, subName string, verbose, autoMergeDisabled bool, workspace string, project string, policySet string, clearPolicyApproval bool) *CommentCommand {
 	// If repoRelDir was empty we want to keep it that way to indicate that it
 	// wasn't specified in the comment.
 	if repoRelDir != "" {
@@ -143,17 +166,20 @@ func NewCommentCommand(repoRelDir string, flags []string, name command.Name, ver
 		}
 	}
 	return &CommentCommand{
-		RepoRelDir:        repoRelDir,
-		Flags:             flags,
-		Name:              name,
-		Verbose:           verbose,
-		Workspace:         workspace,
-		AutoMergeDisabled: autoMergeDisabled,
-		ProjectName:       project,
+		RepoRelDir:          repoRelDir,
+		Flags:               flags,
+		Name:                name,
+		SubName:             subName,
+		Verbose:             verbose,
+		Workspace:           workspace,
+		AutoMergeDisabled:   autoMergeDisabled,
+		ProjectName:         project,
+		PolicySet:           policySet,
+		ClearPolicyApproval: clearPolicyApproval,
 	}
 }
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_event_parsing.go EventParsing
+//go:generate pegomock generate -m --package mocks -o mocks/mock_event_parsing.go EventParsing
 
 // EventParsing parses webhook events from different VCS hosts into their
 // respective Atlantis models.
@@ -617,15 +643,23 @@ func (e *EventParser) ParseGitlabMergeRequestEvent(event gitlab.MergeEvent) (pul
 		BaseRepo:   baseRepo,
 	}
 
-	switch event.ObjectAttributes.Action {
-	case "open":
-		eventType = models.OpenedPullEvent
-	case "update":
-		eventType = e.ParseGitlabMergeRequestUpdateEvent(event)
-	case "merge", "close":
-		eventType = models.ClosedPullEvent
-	default:
+	// If it's a draft PR we ignore it for auto-planning if configured to do so
+	// however it's still possible for users to run plan on it manually via a
+	// comment so if any draft PR is closed we still need to check if we need
+	// to delete its locks.
+	if event.ObjectAttributes.WorkInProgress && event.ObjectAttributes.Action != "close" && !e.AllowDraftPRs {
 		eventType = models.OtherPullEvent
+	} else {
+		switch event.ObjectAttributes.Action {
+		case "open":
+			eventType = models.OpenedPullEvent
+		case "update":
+			eventType = e.ParseGitlabMergeRequestUpdateEvent(event)
+		case "merge", "close":
+			eventType = models.ClosedPullEvent
+		default:
+			eventType = models.OtherPullEvent
+		}
 	}
 
 	user = models.User{
@@ -915,10 +949,8 @@ func (e *EventParser) ParseAzureDevopsRepo(adRepo *azuredevops.GitRepository) (m
 
 		if strings.Contains(uri.Host, "visualstudio.com") {
 			owner = strings.Split(uri.Host, ".")[0]
-		} else if strings.Contains(uri.Host, "dev.azure.com") {
-			owner = strings.Split(uri.Path, "/")[1]
 		} else {
-			owner = strings.Split(uri.Path, "/")[1] // to support owner for self hosted
+			owner = strings.Split(uri.Path, "/")[1]
 		}
 	}
 
@@ -933,7 +965,14 @@ func (e *EventParser) ParseAzureDevopsRepo(adRepo *azuredevops.GitRepository) (m
 		host = "dev.azure.com"
 	}
 
-	cloneURL := fmt.Sprintf("https://%s/%s/%s/_git/%s", host, owner, project, repo)
+	cloneURL := ""
+	// If statement allows compatibility with legacy Visual Studio Team Foundation Services URLs.
+	// Else statement covers Azure DevOps Services URLs
+	if strings.Contains(host, "visualstudio.com") {
+		cloneURL = fmt.Sprintf("https://%s/%s/_git/%s", host, project, repo)
+	} else {
+		cloneURL = fmt.Sprintf("https://%s/%s/%s/_git/%s", host, owner, project, repo)
+	}
 	fmt.Println("%", cloneURL)
 	fullName := fmt.Sprintf("%s/%s/%s", owner, project, repo)
 	return models.NewRepo(models.AzureDevops, fullName, cloneURL, e.AzureDevopsUser, e.AzureDevopsToken)

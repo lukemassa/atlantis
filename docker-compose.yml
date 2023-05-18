@@ -7,12 +7,24 @@ services:
         - 4040:4040
         environment:
             # https://dashboard.ngrok.com/get-started/your-authtoken
-            NGROK_AUTH: REPLACE-WITH-YOUR-TOKEN
+            # NGROK_AUTH: REPLACE-WITH-YOUR-TOKEN // set this in atlantis.env
             NGROK_PROTOCOL: http
             NGROK_PORT: atlantis:4141
+        env_file:
+            - ./atlantis.env
         depends_on:
         - atlantis
+    redis:
+        image: redis:7.0-alpine
+        restart: always
+        ports:
+        - '6379:6379'
+        command: redis-server --save 20 1 --loglevel warning --requirepass test123
+        volumes:
+        - redis:/data
     atlantis:
+        depends_on:
+        - redis
         build:
             context: .
             dockerfile: Dockerfile.dev
@@ -24,3 +36,7 @@ services:
         # Contains the flags that atlantis uses in env var form
         env_file:
             - ./atlantis.env
+
+volumes:
+    redis:
+        driver: local

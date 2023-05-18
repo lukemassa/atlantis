@@ -22,7 +22,7 @@ import (
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_project_lock.go ProjectLocker
+//go:generate pegomock generate -m --package mocks -o mocks/mock_project_lock.go ProjectLocker
 
 // ProjectLocker locks this project against other plans being run until this
 // project is unlocked.
@@ -33,13 +33,14 @@ type ProjectLocker interface {
 	// The third return value is a function that can be called to unlock the
 	// lock. It will only be set if the lock was acquired. Any errors will set
 	// error.
-	TryLock(log logging.SimpleLogging, pull models.PullRequest, user models.User, workspace string, project models.Project) (*TryLockResponse, error)
+	TryLock(log logging.SimpleLogging, pull models.PullRequest, user models.User, workspace string, project models.Project, repoLocking bool) (*TryLockResponse, error)
 }
 
 // DefaultProjectLocker implements ProjectLocker.
 type DefaultProjectLocker struct {
-	Locker    locking.Locker
-	VCSClient vcs.Client
+	Locker     locking.Locker
+	NoOpLocker locking.Locker
+	VCSClient  vcs.Client
 }
 
 // TryLockResponse is the result of trying to lock a project.
@@ -58,8 +59,13 @@ type TryLockResponse struct {
 }
 
 // TryLock implements ProjectLocker.TryLock.
-func (p *DefaultProjectLocker) TryLock(log logging.SimpleLogging, pull models.PullRequest, user models.User, workspace string, project models.Project) (*TryLockResponse, error) {
-	lockAttempt, err := p.Locker.TryLock(project, workspace, pull, user)
+func (p *DefaultProjectLocker) TryLock(log logging.SimpleLogging, pull models.PullRequest, user models.User, workspace string, project models.Project, repoLocking bool) (*TryLockResponse, error) {
+	locker := p.Locker
+	if !repoLocking {
+		locker = p.NoOpLocker
+	}
+
+	lockAttempt, err := locker.TryLock(project, workspace, pull, user)
 	if err != nil {
 		return nil, err
 	}

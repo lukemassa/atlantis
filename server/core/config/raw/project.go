@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	validation "github.com/go-ozzo/ozzo-validation"
@@ -13,21 +14,25 @@ import (
 )
 
 const (
-	DefaultWorkspace           = "default"
-	ApprovedApplyRequirement   = "approved"
-	MergeableApplyRequirement  = "mergeable"
-	UnDivergedApplyRequirement = "undiverged"
+	DefaultWorkspace      = "default"
+	ApprovedRequirement   = "approved"
+	MergeableRequirement  = "mergeable"
+	UnDivergedRequirement = "undiverged"
 )
 
 type Project struct {
 	Name                      *string   `yaml:"name,omitempty"`
+	Branch                    *string   `yaml:"branch,omitempty"`
 	Dir                       *string   `yaml:"dir,omitempty"`
 	Workspace                 *string   `yaml:"workspace,omitempty"`
 	Workflow                  *string   `yaml:"workflow,omitempty"`
 	TerraformVersion          *string   `yaml:"terraform_version,omitempty"`
 	Autoplan                  *Autoplan `yaml:"autoplan,omitempty"`
+	PlanRequirements          []string  `yaml:"plan_requirements,omitempty"`
 	ApplyRequirements         []string  `yaml:"apply_requirements,omitempty"`
+	ImportRequirements        []string  `yaml:"import_requirements,omitempty"`
 	DeleteSourceBranchOnMerge *bool     `yaml:"delete_source_branch_on_merge,omitempty"`
+	RepoLocking               *bool     `yaml:"repo_locking,omitempty"`
 	ExecutionOrderGroup       *int      `yaml:"execution_order_group,omitempty"`
 }
 
@@ -52,11 +57,29 @@ func (p Project) Validate() error {
 		}
 		return nil
 	}
+
+	branchValid := func(value interface{}) error {
+		strPtr := value.(*string)
+		if strPtr == nil {
+			return nil
+		}
+		branch := *strPtr
+		if !strings.HasPrefix(branch, "/") || !strings.HasSuffix(branch, "/") {
+			return errors.New("regex must begin and end with a slash '/'")
+		}
+		withoutSlashes := branch[1 : len(branch)-1]
+		_, err := regexp.Compile(withoutSlashes)
+		return errors.Wrapf(err, "parsing: %s", branch)
+	}
+
 	return validation.ValidateStruct(&p,
 		validation.Field(&p.Dir, validation.Required, validation.By(hasDotDot)),
+		validation.Field(&p.PlanRequirements, validation.By(validPlanReq)),
 		validation.Field(&p.ApplyRequirements, validation.By(validApplyReq)),
+		validation.Field(&p.ImportRequirements, validation.By(validImportReq)),
 		validation.Field(&p.TerraformVersion, validation.By(VersionValidator)),
 		validation.Field(&p.Name, validation.By(validName)),
+		validation.Field(&p.Branch, validation.By(branchValid)),
 	)
 }
 
@@ -67,6 +90,13 @@ func (p Project) ToValid() valid.Project {
 	// in DefaultProjectFinder.
 	cleanedDir := filepath.Clean("./" + *p.Dir)
 	v.Dir = cleanedDir
+
+	if p.Branch != nil {
+		branch := *p.Branch
+		withoutSlashes := branch[1 : len(branch)-1]
+		// Safe to use MustCompile because we test it in Validate().
+		v.BranchRegex = regexp.MustCompile(withoutSlashes)
+	}
 
 	if p.Workspace == nil || *p.Workspace == "" {
 		v.Workspace = DefaultWorkspace
@@ -84,13 +114,19 @@ func (p Project) ToValid() valid.Project {
 		v.Autoplan = p.Autoplan.ToValid()
 	}
 
-	// There are no default apply requirements.
+	// There are no default apply/import requirements.
+	v.PlanRequirements = p.PlanRequirements
 	v.ApplyRequirements = p.ApplyRequirements
+	v.ImportRequirements = p.ImportRequirements
 
 	v.Name = p.Name
 
 	if p.DeleteSourceBranchOnMerge != nil {
 		v.DeleteSourceBranchOnMerge = p.DeleteSourceBranchOnMerge
+	}
+
+	if p.RepoLocking != nil {
+		v.RepoLocking = p.RepoLocking
 	}
 
 	if p.ExecutionOrderGroup != nil {
@@ -109,11 +145,31 @@ func validProjectName(name string) bool {
 	return nameWithoutSlashes == url.QueryEscape(nameWithoutSlashes)
 }
 
+func validPlanReq(value interface{}) error {
+	reqs := value.([]string)
+	for _, r := range reqs {
+		if r != ApprovedRequirement && r != MergeableRequirement && r != UnDivergedRequirement {
+			return fmt.Errorf("%q is not a valid plan_requirement, only %q, %q and %q are supported", r, ApprovedRequirement, MergeableRequirement, UnDivergedRequirement)
+		}
+	}
+	return nil
+}
+
 func validApplyReq(value interface{}) error {
 	reqs := value.([]string)
 	for _, r := range reqs {
-		if r != ApprovedApplyRequirement && r != MergeableApplyRequirement && r != UnDivergedApplyRequirement {
-			return fmt.Errorf("%q is not a valid apply_requirement, only %q, %q and %q are supported", r, ApprovedApplyRequirement, MergeableApplyRequirement, UnDivergedApplyRequirement)
+		if r != ApprovedRequirement && r != MergeableRequirement && r != UnDivergedRequirement {
+			return fmt.Errorf("%q is not a valid apply_requirement, only %q, %q and %q are supported", r, ApprovedRequirement, MergeableRequirement, UnDivergedRequirement)
+		}
+	}
+	return nil
+}
+
+func validImportReq(value interface{}) error {
+	reqs := value.([]string)
+	for _, r := range reqs {
+		if r != ApprovedRequirement && r != MergeableRequirement && r != UnDivergedRequirement {
+			return fmt.Errorf("%q is not a valid import_requirement, only %q, %q and %q are supported", r, ApprovedRequirement, MergeableRequirement, UnDivergedRequirement)
 		}
 	}
 	return nil

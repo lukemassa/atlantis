@@ -3,7 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the License);
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-//    http://www.apache.org/licenses/LICENSE-2.0
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an AS IS BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,19 +17,24 @@
 package terraform
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
-	"github.com/hashicorp/go-getter"
+	"github.com/hashicorp/go-getter/v2"
 	"github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-config-inspect/tfconfig"
 	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/errors"
+	"github.com/warrensbox/terraform-switcher/lib"
 
 	"github.com/runatlantis/atlantis/server/core/runtime/models"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -38,10 +45,7 @@ import (
 
 var LogStreamingValidCmds = [...]string{"init", "plan", "apply"}
 
-// Setting the buffer size to 10mb
-const BufioScannerBufferSize = 10 * 1024 * 1024
-
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_terraform_client.go Client
+//go:generate pegomock generate -m --package mocks -o mocks/mock_terraform_client.go Client
 
 type Client interface {
 	// RunCommandWithVersion executes terraform with args in path. If v is nil,
@@ -51,6 +55,12 @@ type Client interface {
 
 	// EnsureVersion makes sure that terraform version `v` is available to use
 	EnsureVersion(log logging.SimpleLogging, v *version.Version) error
+
+	// ListAvailableVersions returns all available version of Terraform, if available; otherwise this will return an empty list.
+	ListAvailableVersions(log logging.SimpleLogging) ([]string, error)
+
+	// DetectVersion Extracts required_version from Terraform configuration in the specified project directory. Returns nil if unable to determine the version.
+	DetectVersion(log logging.SimpleLogging, projectDirectory string) *version.Version
 }
 
 type DefaultClient struct {
@@ -67,6 +77,7 @@ type DefaultClient struct {
 	// downloader downloads terraform versions.
 	downloader      Downloader
 	downloadBaseURL string
+	downloadAllowed bool
 	// versions maps from the string representation of a tf version (ex. 0.11.10)
 	// to the absolute path of that binary on disk (if it exists).
 	// Use versionsLock to control access.
@@ -81,20 +92,21 @@ type DefaultClient struct {
 	projectCmdOutputHandler jobs.ProjectCommandOutputHandler
 }
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_downloader.go Downloader
+//go:generate pegomock generate -m --package mocks -o mocks/mock_downloader.go Downloader
 
 // Downloader is for downloading terraform versions.
 type Downloader interface {
-	GetFile(dst, src string, opts ...getter.ClientOption) error
-	GetAny(dst, src string, opts ...getter.ClientOption) error
+	GetFile(dst, src string) error
+	GetAny(dst, src string) error
 }
 
 // versionRegex extracts the version from `terraform version` output.
-//     Terraform v0.12.0-alpha4 (2c36829d3265661d8edbd5014de8090ea7e2a076)
-//	   => 0.12.0-alpha4
 //
-//     Terraform v0.11.10
-//	   => 0.11.10
+//	    Terraform v0.12.0-alpha4 (2c36829d3265661d8edbd5014de8090ea7e2a076)
+//		   => 0.12.0-alpha4
+//
+//	    Terraform v0.11.10
+//		   => 0.11.10
 var versionRegex = regexp.MustCompile("Terraform v(.*?)(\\s.*)?\n")
 
 // NewClientWithDefaultVersion creates a new terraform client and pre-fetches the default version
@@ -108,6 +120,7 @@ func NewClientWithDefaultVersion(
 	defaultVersionFlagName string,
 	tfDownloadURL string,
 	tfDownloader Downloader,
+	tfDownloadAllowed bool,
 	usePluginCache bool,
 	fetchAsync bool,
 	projectCmdOutputHandler jobs.ProjectCommandOutputHandler,
@@ -119,7 +132,7 @@ func NewClientWithDefaultVersion(
 
 	localPath, err := exec.LookPath("terraform")
 	if err != nil && defaultVersionStr == "" {
-		return nil, fmt.Errorf("terraform not found in $PATH. Set --%s or download terraform from https://www.terraform.io/downloads.html", defaultVersionFlagName)
+		return nil, fmt.Errorf("terraform not found in $PATH. Set --%s or download terraform from https://developer.hashicorp.com/terraform/downloads", defaultVersionFlagName)
 	}
 	if err == nil {
 		localVersion, err = getVersion(localPath)
@@ -144,7 +157,7 @@ func NewClientWithDefaultVersion(
 			// Since ensureVersion might end up downloading terraform,
 			// we call it asynchronously so as to not delay server startup.
 			versionsLock.Lock()
-			_, err := ensureVersion(log, tfDownloader, versions, defaultVersion, binDir, tfDownloadURL)
+			_, err := ensureVersion(log, tfDownloader, versions, defaultVersion, binDir, tfDownloadURL, tfDownloadAllowed)
 			versionsLock.Unlock()
 			if err != nil {
 				log.Err("could not download terraform %s: %s", defaultVersion.String(), err)
@@ -174,6 +187,7 @@ func NewClientWithDefaultVersion(
 		binDir:                  binDir,
 		downloader:              tfDownloader,
 		downloadBaseURL:         tfDownloadURL,
+		downloadAllowed:         tfDownloadAllowed,
 		versionsLock:            &versionsLock,
 		versions:                versions,
 		usePluginCache:          usePluginCache,
@@ -192,6 +206,7 @@ func NewTestClient(
 	defaultVersionFlagName string,
 	tfDownloadURL string,
 	tfDownloader Downloader,
+	tfDownloadAllowed bool,
 	usePluginCache bool,
 	projectCmdOutputHandler jobs.ProjectCommandOutputHandler,
 ) (*DefaultClient, error) {
@@ -205,6 +220,7 @@ func NewTestClient(
 		defaultVersionFlagName,
 		tfDownloadURL,
 		tfDownloader,
+		tfDownloadAllowed,
 		usePluginCache,
 		false,
 		projectCmdOutputHandler,
@@ -229,6 +245,7 @@ func NewClient(
 	defaultVersionFlagName string,
 	tfDownloadURL string,
 	tfDownloader Downloader,
+	tfDownloadAllowed bool,
 	usePluginCache bool,
 	projectCmdOutputHandler jobs.ProjectCommandOutputHandler,
 ) (*DefaultClient, error) {
@@ -242,6 +259,7 @@ func NewClient(
 		defaultVersionFlagName,
 		tfDownloadURL,
 		tfDownloader,
+		tfDownloadAllowed,
 		usePluginCache,
 		true,
 		projectCmdOutputHandler,
@@ -259,6 +277,96 @@ func (c *DefaultClient) TerraformBinDir() string {
 	return c.binDir
 }
 
+// ListAvailableVersions returns all available version of Terraform. If downloads are not allowed, this will return an empty list.
+func (c *DefaultClient) ListAvailableVersions(log logging.SimpleLogging) ([]string, error) {
+	url := fmt.Sprintf("%s/terraform", c.downloadBaseURL)
+
+	if !c.downloadAllowed {
+		log.Debug("Terraform downloads disabled. Won't list Terraform versions available at %s", url)
+		return []string{}, nil
+	}
+
+	log.Debug("Listing Terraform versions available at: %s", url)
+
+	// terraform-switcher calls os.Exit(1) if it fails to successfully GET the configured URL.
+	// So, before calling it, test if we can connect. Then we can return an error instead if the request fails.
+	resp, err := http.Get(url) // #nosec G107 -- terraform-switch makes this same call below. Also, we don't process the response payload.
+	if err != nil {
+		return nil, fmt.Errorf("Unable to list Terraform versions: %s", err)
+	}
+	defer resp.Body.Close() // nolint: errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Unable to list Terraform versions: response code %d from %s", resp.StatusCode, url)
+	}
+
+	versions, err := lib.GetTFList(url, true)
+	return versions, err
+}
+
+// DetectVersion Extracts required_version from Terraform configuration in the specified project directory. Returns nil if unable to determine the version.
+// This will also try to intelligently evaluate non-exact matches by listing the available versions of Terraform and picking the best match.
+func (c *DefaultClient) DetectVersion(log logging.SimpleLogging, projectDirectory string) *version.Version {
+	module, diags := tfconfig.LoadModule(projectDirectory)
+	if diags.HasErrors() {
+		log.Err("Trying to detect required version: %s", diags.Error())
+	}
+
+	if len(module.RequiredCore) != 1 {
+		log.Info("Cannot determine which version to use from terraform configuration, detected %d possibilities.", len(module.RequiredCore))
+		return nil
+	}
+	requiredVersionSetting := module.RequiredCore[0]
+	log.Debug("Found required_version setting of %q", requiredVersionSetting)
+
+	tfVersions, err := c.ListAvailableVersions(log)
+	if err != nil {
+		log.Err("Unable to list Terraform versions, may fall back to default: %s", err)
+	}
+
+	if len(tfVersions) == 0 {
+		// Fall back to an exact required version string
+		// We allow `= x.y.z`, `=x.y.z` or `x.y.z` where `x`, `y` and `z` are integers.
+		re := regexp.MustCompile(`^=?\s*([0-9.]+)\s*$`)
+		matched := re.FindStringSubmatch(requiredVersionSetting)
+		if len(matched) == 0 {
+			log.Debug("Did not specify exact version in terraform configuration, found %q", requiredVersionSetting)
+			return nil
+		}
+		tfVersions = []string{matched[1]}
+	}
+
+	constraint, _ := version.NewConstraint(requiredVersionSetting)
+	versions := make([]*version.Version, len(tfVersions))
+
+	for i, tfvals := range tfVersions {
+		newVersion, err := version.NewVersion(tfvals)
+		if err == nil {
+			versions[i] = newVersion
+		}
+	}
+
+	if len(versions) == 0 {
+		log.Debug("Did not specify exact valid version in terraform configuration, found %q", requiredVersionSetting)
+		return nil
+	}
+
+	sort.Sort(sort.Reverse(version.Collection(versions)))
+
+	for _, element := range versions {
+		if constraint.Check(element) { // Validate a version against a constraint
+			tfversionStr := element.String()
+			if lib.ValidVersionFormat(tfversionStr) { //check if version format is correct
+				tfversion, _ := version.NewVersion(tfversionStr)
+				log.Info("Detected module requires version: %s", tfversionStr)
+				return tfversion
+			}
+		}
+	}
+	log.Debug("Could not match any valid terraform version with %q", requiredVersionSetting)
+	return nil
+}
+
 // See Client.EnsureVersion.
 func (c *DefaultClient) EnsureVersion(log logging.SimpleLogging, v *version.Version) error {
 	if v == nil {
@@ -267,7 +375,7 @@ func (c *DefaultClient) EnsureVersion(log logging.SimpleLogging, v *version.Vers
 
 	var err error
 	c.versionsLock.Lock()
-	_, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir, c.downloadBaseURL)
+	_, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir, c.downloadBaseURL, c.downloadAllowed)
 	c.versionsLock.Unlock()
 	if err != nil {
 		return err
@@ -311,7 +419,7 @@ func (c *DefaultClient) RunCommandWithVersion(ctx command.ProjectContext, path s
 		ctx.Log.Err(err.Error())
 		return ansi.Strip(string(out)), err
 	}
-	ctx.Log.Info("successfully ran %q in %q", tfCmd, path)
+	ctx.Log.Info("Successfully ran %q in %q", tfCmd, path)
 
 	return ansi.Strip(string(out)), nil
 }
@@ -344,7 +452,7 @@ func (c *DefaultClient) prepCmd(log logging.SimpleLogging, v *version.Version, w
 	} else {
 		var err error
 		c.versionsLock.Lock()
-		binPath, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir, c.downloadBaseURL)
+		binPath, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir, c.downloadBaseURL, c.downloadAllowed)
 		c.versionsLock.Unlock()
 		if err != nil {
 			return "", nil, err
@@ -415,7 +523,7 @@ func MustConstraint(v string) version.Constraints {
 
 // ensureVersion returns the path to a terraform binary of version v.
 // It will download this version if we don't have it.
-func ensureVersion(log logging.SimpleLogging, dl Downloader, versions map[string]string, v *version.Version, binDir string, downloadURL string) (string, error) {
+func ensureVersion(log logging.SimpleLogging, dl Downloader, versions map[string]string, v *version.Version, binDir string, downloadURL string, downloadsAllowed bool) (string, error) {
 	if binPath, ok := versions[v.String()]; ok {
 		return binPath, nil
 	}
@@ -436,7 +544,11 @@ func ensureVersion(log logging.SimpleLogging, dl Downloader, versions map[string
 		versions[v.String()] = dest
 		return dest, nil
 	}
-	log.Info("could not find terraform version %s in PATH or %s, downloading from %s", v.String(), binDir, downloadURL)
+	if !downloadsAllowed {
+		return "", fmt.Errorf("Could not find terraform version %s in PATH or %s, and downloads are disabled", v.String(), binDir)
+	}
+
+	log.Info("Could not find terraform version %s in PATH or %s, downloading from %s", v.String(), binDir, downloadURL)
 	urlPrefix := fmt.Sprintf("%s/terraform/%s/terraform_%s", downloadURL, v.String(), v.String())
 	binURL := fmt.Sprintf("%s_%s_%s.zip", urlPrefix, runtime.GOOS, runtime.GOARCH)
 	checksumURL := fmt.Sprintf("%s_SHA256SUMS", urlPrefix)
@@ -445,7 +557,7 @@ func ensureVersion(log logging.SimpleLogging, dl Downloader, versions map[string
 		return "", errors.Wrapf(err, "downloading terraform version %s at %q", v.String(), fullSrcURL)
 	}
 
-	log.Info("downloaded terraform %s to %s", v.String(), dest)
+	log.Info("Downloaded terraform %s to %s", v.String(), dest)
 	versions[v.String()] = dest
 	return dest, nil
 }
@@ -512,11 +624,13 @@ var rcFileContents = `credentials "%s" {
 type DefaultDownloader struct{}
 
 // See go-getter.GetFile.
-func (d *DefaultDownloader) GetFile(dst, src string, opts ...getter.ClientOption) error {
-	return getter.GetFile(dst, src, opts...)
+func (d *DefaultDownloader) GetFile(dst, src string) error {
+	_, err := getter.GetFile(context.Background(), dst, src)
+	return err
 }
 
 // See go-getter.GetFile.
-func (d *DefaultDownloader) GetAny(dst, src string, opts ...getter.ClientOption) error {
-	return getter.GetAny(dst, src, opts...)
+func (d *DefaultDownloader) GetAny(dst, src string) error {
+	_, err := getter.GetAny(context.Background(), dst, src)
+	return err
 }

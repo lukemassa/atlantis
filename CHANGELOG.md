@@ -1,3 +1,100 @@
+**NOTE:** We do not plan to update this page anymore. Please see the releases page for the updated changelog.
+
+---
+
+# v0.23.3
+
+Bugfixes and new Features
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.23.3
+
+# v0.23.2
+
+Bugfixes and new Features
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.23.2
+
+# v0.23.1
+
+Bugfixes and new Features
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.23.1
+
+# v0.23.0
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.23.0
+
+# v0.22.3
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.22.3
+
+# v0.22.2
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.22.2
+
+# v0.22.1
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.22.1
+
+# v0.22.0
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.22.0
+
+# v0.21.0
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.21.0
+
+## Breaking changes
+* Terraform version 1.x have been removed to deprecate beta versions of terraform and reduce the docker image size. Each version of terraform is about 80 MB. ([#2619](https://github.com/runatlantis/atlantis/pull/2619))
+
+# v0.20.1
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.20.1
+
+# v0.20.0
+
+Broken build due to github action issues
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.20.0
+
+# v0.19.8
+
+Bugfixes and new Features
+
+## What's Changed
+
+https://github.com/runatlantis/atlantis/releases/tag/v0.19.8
+
 # v0.19.7
 
 Bugfixes and new Features
@@ -1699,7 +1796,7 @@ These are the changes in detail:
     ```
 
     The `w` group permission was added so that in OpenShift, the random uid can write
-    their own login entry (https://github.com/runatlantis/atlantis/blob/master/docker-entrypoint.sh#L28)
+    their own login entry (https://github.com/runatlantis/atlantis/blob/main/docker-entrypoint.sh#L28)
     which is required because `terraform` expects the running user to have an entry
     in `/etc/passwd`.
 
@@ -2442,7 +2539,7 @@ None
 assume role session with the GitHub username of the user running the Atlantis command
 use the `atlantis_user` terraform variable alongside Terraform's
 [built-in support](https://www.terraform.io/docs/providers/aws/#assume-role) for assume role
-(see https://github.com/runatlantis/atlantis/blob/master/README.md#assume-role-session-names)
+(see https://github.com/runatlantis/atlantis/blob/main/README.md#assume-role-session-names)
 * Atlantis has a docker image now ([#123](https://github.com/hootsuite/atlantis/pull/123)). Here is how you can try it out:
 
 ```bash

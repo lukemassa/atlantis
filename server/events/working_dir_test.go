@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events"
@@ -28,12 +29,10 @@ func disableSSLVerification() func() {
 // Test that if we don't have any existing files, we check out the repo.
 func TestClone_NoneExisting(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 	expCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	dataDir := t.TempDir()
 
 	wd := &events.FileWorkspace{
 		DataDir:                     dataDir,
@@ -57,23 +56,22 @@ func TestClone_NoneExisting(t *testing.T) {
 // successfully when we're using the merge method.
 func TestClone_CheckoutMergeNoneExisting(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 
-	// Add a commit to branch 'branch' that's not on master.
+	// Add a commit to branch 'branch' that's not on main.
 	runCmd(t, repoDir, "git", "checkout", "branch")
 	runCmd(t, repoDir, "touch", "branch-file")
 	runCmd(t, repoDir, "git", "add", "branch-file")
 	runCmd(t, repoDir, "git", "commit", "-m", "branch-commit")
 	branchCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 
-	// Now switch back to master and advance the master branch by another
+	// Now switch back to main and advance the main branch by another
 	// commit.
-	runCmd(t, repoDir, "git", "checkout", "master")
-	runCmd(t, repoDir, "touch", "master-file")
-	runCmd(t, repoDir, "git", "add", "master-file")
-	runCmd(t, repoDir, "git", "commit", "-m", "master-commit")
-	masterCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
+	runCmd(t, repoDir, "git", "checkout", "main")
+	runCmd(t, repoDir, "touch", "main-file")
+	runCmd(t, repoDir, "git", "add", "main-file")
+	runCmd(t, repoDir, "git", "commit", "-m", "main-commit")
+	mainCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 
 	// Finally, perform a merge in another branch ourselves, just so we know
 	// what the final state of the repo should be.
@@ -81,13 +79,13 @@ func TestClone_CheckoutMergeNoneExisting(t *testing.T) {
 	runCmd(t, repoDir, "git", "merge", "-m", "atlantis-merge", "branch")
 	expLsOutput := runCmd(t, repoDir, "ls")
 
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	dataDir := t.TempDir()
 
 	overrideURL := fmt.Sprintf("file://%s", repoDir)
 	wd := &events.FileWorkspace{
 		DataDir:                     dataDir,
 		CheckoutMerge:               true,
+		CheckoutDepth:               50,
 		TestingOverrideHeadCloneURL: overrideURL,
 		TestingOverrideBaseCloneURL: overrideURL,
 		GpgNoSigningEnabled:         true,
@@ -96,7 +94,7 @@ func TestClone_CheckoutMergeNoneExisting(t *testing.T) {
 	cloneDir, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "branch",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 	Ok(t, err)
 	Equals(t, false, hasDiverged)
@@ -104,7 +102,7 @@ func TestClone_CheckoutMergeNoneExisting(t *testing.T) {
 	// Check the commits.
 	actBaseCommit := runCmd(t, cloneDir, "git", "rev-parse", "HEAD~1")
 	actHeadCommit := runCmd(t, cloneDir, "git", "rev-parse", "HEAD^2")
-	Equals(t, masterCommit, actBaseCommit)
+	Equals(t, mainCommit, actBaseCommit)
 	Equals(t, branchCommit, actHeadCommit)
 
 	// Use ls to verify the repo looks good.
@@ -116,28 +114,27 @@ func TestClone_CheckoutMergeNoneExisting(t *testing.T) {
 // the right commit, then we don't reclone.
 func TestClone_CheckoutMergeNoReclone(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 
-	// Add a commit to branch 'branch' that's not on master.
+	// Add a commit to branch 'branch' that's not on main.
 	runCmd(t, repoDir, "git", "checkout", "branch")
 	runCmd(t, repoDir, "touch", "branch-file")
 	runCmd(t, repoDir, "git", "add", "branch-file")
 	runCmd(t, repoDir, "git", "commit", "-m", "branch-commit")
 
-	// Now switch back to master and advance the master branch by another commit.
-	runCmd(t, repoDir, "git", "checkout", "master")
-	runCmd(t, repoDir, "touch", "master-file")
-	runCmd(t, repoDir, "git", "add", "master-file")
-	runCmd(t, repoDir, "git", "commit", "-m", "master-commit")
+	// Now switch back to main and advance the main branch by another commit.
+	runCmd(t, repoDir, "git", "checkout", "main")
+	runCmd(t, repoDir, "touch", "main-file")
+	runCmd(t, repoDir, "git", "add", "main-file")
+	runCmd(t, repoDir, "git", "commit", "-m", "main-commit")
 
 	// Run the clone for the first time.
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	dataDir := t.TempDir()
 	overrideURL := fmt.Sprintf("file://%s", repoDir)
 	wd := &events.FileWorkspace{
 		DataDir:                     dataDir,
 		CheckoutMerge:               true,
+		CheckoutDepth:               50,
 		TestingOverrideHeadCloneURL: overrideURL,
 		TestingOverrideBaseCloneURL: overrideURL,
 		GpgNoSigningEnabled:         true,
@@ -146,7 +143,7 @@ func TestClone_CheckoutMergeNoReclone(t *testing.T) {
 	_, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "branch",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 	Ok(t, err)
 	Equals(t, false, hasDiverged)
@@ -158,7 +155,7 @@ func TestClone_CheckoutMergeNoReclone(t *testing.T) {
 	cloneDir, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "branch",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 	Ok(t, err)
 	Equals(t, false, hasDiverged)
@@ -172,10 +169,9 @@ func TestClone_CheckoutMergeNoReclone(t *testing.T) {
 // merged is a fast-forward merge. See #584.
 func TestClone_CheckoutMergeNoRecloneFastForward(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 
-	// Add a commit to branch 'branch' that's not on master.
+	// Add a commit to branch 'branch' that's not on main.
 	// This will result in a fast-forwardable merge.
 	runCmd(t, repoDir, "git", "checkout", "branch")
 	runCmd(t, repoDir, "touch", "branch-file")
@@ -183,12 +179,12 @@ func TestClone_CheckoutMergeNoRecloneFastForward(t *testing.T) {
 	runCmd(t, repoDir, "git", "commit", "-m", "branch-commit")
 
 	// Run the clone for the first time.
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	dataDir := t.TempDir()
 	overrideURL := fmt.Sprintf("file://%s", repoDir)
 	wd := &events.FileWorkspace{
 		DataDir:                     dataDir,
 		CheckoutMerge:               true,
+		CheckoutDepth:               50,
 		TestingOverrideHeadCloneURL: overrideURL,
 		TestingOverrideBaseCloneURL: overrideURL,
 		GpgNoSigningEnabled:         true,
@@ -197,7 +193,7 @@ func TestClone_CheckoutMergeNoRecloneFastForward(t *testing.T) {
 	_, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "branch",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 	Ok(t, err)
 	Equals(t, false, hasDiverged)
@@ -209,7 +205,7 @@ func TestClone_CheckoutMergeNoRecloneFastForward(t *testing.T) {
 	cloneDir, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "branch",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 	Ok(t, err)
 	Equals(t, false, hasDiverged)
@@ -222,29 +218,28 @@ func TestClone_CheckoutMergeNoRecloneFastForward(t *testing.T) {
 // Test that if there's a conflict when merging we return a good error.
 func TestClone_CheckoutMergeConflict(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 
-	// Add a commit to branch 'branch' that's not on master.
+	// Add a commit to branch 'branch' that's not on main.
 	runCmd(t, repoDir, "git", "checkout", "branch")
 	runCmd(t, repoDir, "sh", "-c", "echo hi >> file")
 	runCmd(t, repoDir, "git", "add", "file")
 	runCmd(t, repoDir, "git", "commit", "-m", "branch-commit")
 
-	// Add a new commit to master that will cause a conflict if branch was
+	// Add a new commit to main that will cause a conflict if branch was
 	// merged.
-	runCmd(t, repoDir, "git", "checkout", "master")
+	runCmd(t, repoDir, "git", "checkout", "main")
 	runCmd(t, repoDir, "sh", "-c", "echo conflict >> file")
 	runCmd(t, repoDir, "git", "add", "file")
 	runCmd(t, repoDir, "git", "commit", "-m", "commit")
 
 	// We're set up, now trigger the Atlantis clone.
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	dataDir := t.TempDir()
 	overrideURL := fmt.Sprintf("file://%s", repoDir)
 	wd := &events.FileWorkspace{
 		DataDir:                     dataDir,
 		CheckoutMerge:               true,
+		CheckoutDepth:               50,
 		TestingOverrideHeadCloneURL: overrideURL,
 		TestingOverrideBaseCloneURL: overrideURL,
 		GpgNoSigningEnabled:         true,
@@ -253,7 +248,7 @@ func TestClone_CheckoutMergeConflict(t *testing.T) {
 	_, _, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "branch",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 
 	ErrContains(t, "running git merge -q --no-ff -m atlantis-merge FETCH_HEAD", err)
@@ -264,12 +259,98 @@ func TestClone_CheckoutMergeConflict(t *testing.T) {
 	ErrContains(t, "exit status 1", err)
 }
 
+func TestClone_CheckoutMergeShallow(t *testing.T) {
+	// Initialize the git repo.
+	repoDir := initRepo(t)
+
+	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "should not be cloned")
+	oldCommit := strings.TrimSpace(runCmd(t, repoDir, "git", "rev-parse", "HEAD"))
+
+	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "merge-base")
+	baseCommit := strings.TrimSpace(runCmd(t, repoDir, "git", "rev-parse", "HEAD"))
+
+	runCmd(t, repoDir, "git", "branch", "-f", "branch", "HEAD")
+
+	// Add a commit to branch 'branch' that's not on master.
+	runCmd(t, repoDir, "git", "checkout", "branch")
+	runCmd(t, repoDir, "touch", "branch-file")
+	runCmd(t, repoDir, "git", "add", "branch-file")
+	runCmd(t, repoDir, "git", "commit", "-m", "branch-commit")
+
+	// Now switch back to master and advance the master branch by another
+	// commit.
+	runCmd(t, repoDir, "git", "checkout", "main")
+	runCmd(t, repoDir, "touch", "main-file")
+	runCmd(t, repoDir, "git", "add", "main-file")
+	runCmd(t, repoDir, "git", "commit", "-m", "main-commit")
+
+	overrideURL := fmt.Sprintf("file://%s", repoDir)
+
+	// Test that we don't check out full repo if using CheckoutMerge strategy
+	t.Run("Shallow", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		wd := &events.FileWorkspace{
+			DataDir:       dataDir,
+			CheckoutMerge: true,
+			// retrieve two commits in each branch:
+			// master: master-commit, merge-base
+			// branch: branch-commit, merge-base
+			CheckoutDepth:               2,
+			TestingOverrideHeadCloneURL: overrideURL,
+			TestingOverrideBaseCloneURL: overrideURL,
+			GpgNoSigningEnabled:         true,
+		}
+
+		cloneDir, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
+			BaseRepo:   models.Repo{},
+			HeadBranch: "branch",
+			BaseBranch: "main",
+		}, "default")
+		Ok(t, err)
+		Equals(t, false, hasDiverged)
+
+		gotBaseCommitType := runCmd(t, cloneDir, "git", "cat-file", "-t", baseCommit)
+		Assert(t, gotBaseCommitType == "commit\n", "should have merge-base in shallow repo")
+		gotOldCommitType := runCmdErrCode(t, cloneDir, 128, "git", "cat-file", "-t", oldCommit)
+		Assert(t, strings.Contains(gotOldCommitType, "could not get object info"), "should not have old commit in shallow repo")
+	})
+
+	// Test that we will check out full repo if CheckoutDepth is too small
+	t.Run("FullClone", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		wd := &events.FileWorkspace{
+			DataDir:       dataDir,
+			CheckoutMerge: true,
+			// 1 is not enough to retrieve merge-base, so full clone should be performed
+			CheckoutDepth:               1,
+			TestingOverrideHeadCloneURL: overrideURL,
+			TestingOverrideBaseCloneURL: overrideURL,
+			GpgNoSigningEnabled:         true,
+		}
+
+		cloneDir, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
+			BaseRepo:   models.Repo{},
+			HeadBranch: "branch",
+			BaseBranch: "main",
+		}, "default")
+		Ok(t, err)
+		Equals(t, false, hasDiverged)
+
+		gotBaseCommitType := runCmd(t, cloneDir, "git", "cat-file", "-t", baseCommit)
+		Assert(t, gotBaseCommitType == "commit\n", "should have merge-base in full repo")
+		gotOldCommitType := runCmd(t, cloneDir, "git", "cat-file", "-t", oldCommit)
+		Assert(t, gotOldCommitType == "commit\n", "should have old commit in full repo")
+	})
+
+}
+
 // Test that if the repo is already cloned and is at the right commit, we
 // don't reclone.
 func TestClone_NoReclone(t *testing.T) {
-	repoDir, _ := initRepo(t)
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	repoDir := initRepo(t)
+	dataDir := t.TempDir()
 
 	runCmd(t, dataDir, "mkdir", "-p", "repos/0/")
 	runCmd(t, dataDir, "mv", repoDir, "repos/0/default")
@@ -297,10 +378,8 @@ func TestClone_NoReclone(t *testing.T) {
 // Test that if the repo is already cloned but is at the wrong commit, we
 // reclone.
 func TestClone_RecloneWrongCommit(t *testing.T) {
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	repoDir := initRepo(t)
+	dataDir := t.TempDir()
 
 	// Copy the repo to our data dir.
 	runCmd(t, dataDir, "mkdir", "-p", "repos/0/")
@@ -333,11 +412,11 @@ func TestClone_RecloneWrongCommit(t *testing.T) {
 }
 
 // Test that if the branch we're merging into has diverged and we're using
-// checkout-strategy=merge, we warn the user (see #804).
+// checkout-strategy=merge, we actually merge the branch.
+// Also check that we do not merge if we are not using the merge strategy.
 func TestClone_MasterHasDiverged(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 
 	// Simulate first PR.
 	runCmd(t, repoDir, "git", "checkout", "-b", "first-pr")
@@ -348,7 +427,7 @@ func TestClone_MasterHasDiverged(t *testing.T) {
 	// Atlantis checkout first PR.
 	firstPRDir := repoDir + "/first-pr"
 	runCmd(t, repoDir, "mkdir", "-p", "first-pr")
-	runCmd(t, firstPRDir, "git", "clone", "--branch", "master", "--single-branch", repoDir, ".")
+	runCmd(t, firstPRDir, "git", "clone", "--branch", "main", "--single-branch", repoDir, ".")
 	runCmd(t, firstPRDir, "git", "remote", "add", "head", repoDir)
 	runCmd(t, firstPRDir, "git", "fetch", "head", "+refs/heads/first-pr")
 	runCmd(t, firstPRDir, "git", "config", "--local", "user.email", "atlantisbot@runatlantis.io")
@@ -357,7 +436,7 @@ func TestClone_MasterHasDiverged(t *testing.T) {
 	runCmd(t, firstPRDir, "git", "merge", "-q", "--no-ff", "-m", "atlantis-merge", "FETCH_HEAD")
 
 	// Simulate second PR.
-	runCmd(t, repoDir, "git", "checkout", "master")
+	runCmd(t, repoDir, "git", "checkout", "main")
 	runCmd(t, repoDir, "git", "checkout", "-b", "second-pr")
 	runCmd(t, repoDir, "touch", "file2")
 	runCmd(t, repoDir, "git", "add", "file2")
@@ -366,7 +445,7 @@ func TestClone_MasterHasDiverged(t *testing.T) {
 	// Atlantis checkout second PR.
 	secondPRDir := repoDir + "/second-pr"
 	runCmd(t, repoDir, "mkdir", "-p", "second-pr")
-	runCmd(t, secondPRDir, "git", "clone", "--branch", "master", "--single-branch", repoDir, ".")
+	runCmd(t, secondPRDir, "git", "clone", "--branch", "main", "--single-branch", repoDir, ".")
 	runCmd(t, secondPRDir, "git", "remote", "add", "head", repoDir)
 	runCmd(t, secondPRDir, "git", "fetch", "head", "+refs/heads/second-pr")
 	runCmd(t, secondPRDir, "git", "config", "--local", "user.email", "atlantisbot@runatlantis.io")
@@ -375,43 +454,55 @@ func TestClone_MasterHasDiverged(t *testing.T) {
 	runCmd(t, secondPRDir, "git", "merge", "-q", "--no-ff", "-m", "atlantis-merge", "FETCH_HEAD")
 
 	// Merge first PR
-	runCmd(t, repoDir, "git", "checkout", "master")
+	runCmd(t, repoDir, "git", "checkout", "main")
 	runCmd(t, repoDir, "git", "merge", "first-pr")
 
-	// Copy the second-pr repo to our data dir which has diverged remote master
+	// Copy the second-pr repo to our data dir which has diverged remote main
 	runCmd(t, repoDir, "mkdir", "-p", "repos/0/")
 	runCmd(t, repoDir, "cp", "-R", secondPRDir, "repos/0/default")
 
 	// Run the clone.
 	wd := &events.FileWorkspace{
 		DataDir:             repoDir,
-		CheckoutMerge:       true,
+		CheckoutMerge:       false,
+		CheckoutDepth:       50,
 		GpgNoSigningEnabled: true,
 	}
-	_, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{CloneURL: repoDir}, models.PullRequest{
-		BaseRepo:   models.Repo{CloneURL: repoDir},
-		HeadBranch: "second-pr",
-		BaseBranch: "master",
-	}, "default")
-	Ok(t, err)
-	Equals(t, hasDiverged, true)
 
-	// Run it again but without the checkout merge strategy. It should return
-	// false.
-	wd.CheckoutMerge = false
-	_, hasDiverged, err = wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
+	// Run the clone without the checkout merge strategy. It should return
+	// false for hasDiverged
+	_, hasDiverged, err := wd.Clone(logging.NewNoopLogger(t), models.Repo{}, models.PullRequest{
 		BaseRepo:   models.Repo{},
 		HeadBranch: "second-pr",
-		BaseBranch: "master",
+		BaseBranch: "main",
 	}, "default")
 	Ok(t, err)
-	Equals(t, hasDiverged, false)
+	Assert(t, hasDiverged == false, "Clone with CheckoutMerge=false should not merge")
+
+	wd.CheckoutMerge = true
+	// Run the clone twice with the merge strategy, the first run should
+	// return true for hasDiverged, subsequent runs should
+	// return false since the first call is supposed to merge.
+	_, hasDiverged, err = wd.Clone(logging.NewNoopLogger(t), models.Repo{CloneURL: repoDir}, models.PullRequest{
+		BaseRepo:   models.Repo{CloneURL: repoDir},
+		HeadBranch: "second-pr",
+		BaseBranch: "main",
+	}, "default")
+	Ok(t, err)
+	Assert(t, hasDiverged == true, "First clone with CheckoutMerge=true with diverged base should have merged")
+
+	_, hasDiverged, err = wd.Clone(logging.NewNoopLogger(t), models.Repo{CloneURL: repoDir}, models.PullRequest{
+		BaseRepo:   models.Repo{CloneURL: repoDir},
+		HeadBranch: "second-pr",
+		BaseBranch: "main",
+	}, "default")
+	Ok(t, err)
+	Assert(t, hasDiverged == false, "Second clone with CheckoutMerge=true and initially diverged base should not merge again")
 }
 
 func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 
 	// Simulate first PR.
 	runCmd(t, repoDir, "git", "checkout", "-b", "first-pr")
@@ -422,7 +513,7 @@ func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	// Atlantis checkout first PR.
 	firstPRDir := repoDir + "/first-pr"
 	runCmd(t, repoDir, "mkdir", "-p", "first-pr")
-	runCmd(t, firstPRDir, "git", "clone", "--branch", "master", "--single-branch", repoDir, ".")
+	runCmd(t, firstPRDir, "git", "clone", "--branch", "main", "--single-branch", repoDir, ".")
 	runCmd(t, firstPRDir, "git", "remote", "add", "head", repoDir)
 	runCmd(t, firstPRDir, "git", "fetch", "head", "+refs/heads/first-pr")
 	runCmd(t, firstPRDir, "git", "config", "--local", "user.email", "atlantisbot@runatlantis.io")
@@ -431,7 +522,7 @@ func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	runCmd(t, firstPRDir, "git", "merge", "-q", "--no-ff", "-m", "atlantis-merge", "FETCH_HEAD")
 
 	// Simulate second PR.
-	runCmd(t, repoDir, "git", "checkout", "master")
+	runCmd(t, repoDir, "git", "checkout", "main")
 	runCmd(t, repoDir, "git", "checkout", "-b", "second-pr")
 	runCmd(t, repoDir, "touch", "file2")
 	runCmd(t, repoDir, "git", "add", "file2")
@@ -440,7 +531,7 @@ func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	// Atlantis checkout second PR.
 	secondPRDir := repoDir + "/second-pr"
 	runCmd(t, repoDir, "mkdir", "-p", "second-pr")
-	runCmd(t, secondPRDir, "git", "clone", "--branch", "master", "--single-branch", repoDir, ".")
+	runCmd(t, secondPRDir, "git", "clone", "--branch", "main", "--single-branch", repoDir, ".")
 	runCmd(t, secondPRDir, "git", "remote", "add", "head", repoDir)
 	runCmd(t, secondPRDir, "git", "fetch", "head", "+refs/heads/second-pr")
 	runCmd(t, secondPRDir, "git", "config", "--local", "user.email", "atlantisbot@runatlantis.io")
@@ -449,10 +540,10 @@ func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	runCmd(t, secondPRDir, "git", "merge", "-q", "--no-ff", "-m", "atlantis-merge", "FETCH_HEAD")
 
 	// Merge first PR
-	runCmd(t, repoDir, "git", "checkout", "master")
+	runCmd(t, repoDir, "git", "checkout", "main")
 	runCmd(t, repoDir, "git", "merge", "first-pr")
 
-	// Copy the second-pr repo to our data dir which has diverged remote master
+	// Copy the second-pr repo to our data dir which has diverged remote main
 	runCmd(t, repoDir, "mkdir", "-p", "repos/0/")
 	runCmd(t, repoDir, "cp", "-R", secondPRDir, "repos/0/default")
 
@@ -463,6 +554,7 @@ func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	wd := &events.FileWorkspace{
 		DataDir:             repoDir,
 		CheckoutMerge:       true,
+		CheckoutDepth:       50,
 		GpgNoSigningEnabled: true,
 	}
 	hasDiverged := wd.HasDiverged(logging.NewNoopLogger(t), repoDir+"/repos/0/default")
@@ -475,9 +567,9 @@ func TestHasDiverged_MasterHasDiverged(t *testing.T) {
 	Equals(t, hasDiverged, false)
 }
 
-func initRepo(t *testing.T) (string, func()) {
-	repoDir, cleanup := TempDir(t)
-	runCmd(t, repoDir, "git", "init", "--initial-branch=master")
+func initRepo(t *testing.T) string {
+	repoDir := t.TempDir()
+	runCmd(t, repoDir, "git", "init", "--initial-branch=main")
 	runCmd(t, repoDir, "touch", ".gitkeep")
 	runCmd(t, repoDir, "git", "add", ".gitkeep")
 	runCmd(t, repoDir, "git", "config", "--local", "user.email", "atlantisbot@runatlantis.io")
@@ -485,5 +577,5 @@ func initRepo(t *testing.T) (string, func()) {
 	runCmd(t, repoDir, "git", "config", "--local", "commit.gpgsign", "false")
 	runCmd(t, repoDir, "git", "commit", "-m", "initial commit")
 	runCmd(t, repoDir, "git", "branch", "branch")
-	return repoDir, cleanup
+	return repoDir
 }

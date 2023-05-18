@@ -12,17 +12,17 @@ spec:
       partition: 0
   selector:
     matchLabels:
-      app: atlantis
+      app.kubernetes.io/name: atlantis
   template:
     metadata:
       labels:
-        app: atlantis
+        app.kubernetes.io/name: atlantis
     spec:
       securityContext:
         fsGroup: 1000 # Atlantis group (1000) read/write access to volumes.
       containers:
       - name: atlantis
-        image: ghcr.io/runatlantis/atlantis:v0.19.7
+        image: ghcr.io/runatlantis/atlantis:latest
         env:
         - name: ATLANTIS_DATA_DIR
           value: /atlantis
@@ -79,4 +79,4 @@ spec:
     port: 80
     targetPort: 4141
   selector:
-    app: atlantis
+    app.kubernetes.io/name: atlantis

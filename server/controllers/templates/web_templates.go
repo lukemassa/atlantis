@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_template_writer.go TemplateWriter
+//go:generate pegomock generate -m --package mocks -o mocks/mock_template_writer.go TemplateWriter
 
 // TemplateWriter is an interface over html/template that's used to enable
 // mocking.
@@ -151,7 +151,7 @@ var IndexTemplate = template.Must(template.New("index.html.tmpl").Parse(`
   </div>
 </div>
 <footer>
-v{{ .AtlantisVersion }}
+{{ .AtlantisVersion }}
 </footer>
 <script>
 
@@ -242,7 +242,6 @@ type LockDetailData struct {
 	PullRequestLink string
 	LockedBy        string
 	Workspace       string
-	Time            time.Time
 	AtlantisVersion string
 	// CleanedBasePath is the path Atlantis is accessible at externally. If
 	// not using a path-based proxy, this will be an empty string. Never ends
@@ -401,7 +400,7 @@ var ProjectJobsTemplate = template.Must(template.New("blank.html.tmpl").Parse(`
       <div id="terminal"></div>
     </section>
   </div>
-  <footer>
+  <footer>Initializing...
   </footer>
 
     <script src="{{ .CleanedBasePath }}/static/js/jquery-3.5.1.min.js"></script>
@@ -410,12 +409,23 @@ var ProjectJobsTemplate = template.Must(template.New("blank.html.tmpl").Parse(`
     <script src="{{ .CleanedBasePath }}/static/js/xterm-addon-fit-0.4.0.js"></script>
 
     <script>
+      function updateTerminalStatus(msg) {
+          document.getElementsByTagName("footer")[0].innerText = msg;
+      }
       var term = new Terminal({scrollback: 15000});
       var socket = new WebSocket(
         (document.location.protocol === "http:" ? "ws://" : "wss://") +
         document.location.host +
         document.location.pathname +
         "/ws");
+
+      socket.onopen = function(event) {
+        updateTerminalStatus("Running...");
+      };
+      socket.onclose = function(event) {
+        updateTerminalStatus("Done");
+      };
+
       window.addEventListener("unload", function(event) {
         websocket.close();
       })

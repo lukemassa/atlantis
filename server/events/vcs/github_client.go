@@ -21,29 +21,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Laisky/graphql"
-	"github.com/google/go-github/v31/github"
+	"github.com/google/go-github/v52/github"
 	"github.com/pkg/errors"
-	"github.com/runatlantis/atlantis/server/core/config"
+	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
 	"github.com/runatlantis/atlantis/server/logging"
 	"github.com/shurcooL/githubv4"
-	"golang.org/x/oauth2"
 )
 
 // maxCommentLength is the maximum number of chars allowed in a single comment
 // by GitHub.
 const maxCommentLength = 65536
 
+var (
+	clientMutationID            = githubv4.NewString("atlantis")
+	pullRequestDismissalMessage = *githubv4.NewString("Dismissing reviews because of plan changes")
+)
+
 // GithubClient is used to perform GitHub actions.
 type GithubClient struct {
-	user           string
-	client         *github.Client
-	v4MutateClient *graphql.Client
-	v4QueryClient  *githubv4.Client
-	ctx            context.Context
-	logger         logging.SimpleLogging
+	user     string
+	client   *github.Client
+	v4Client *githubv4.Client
+	ctx      context.Context
+	logger   logging.SimpleLogging
+	config   GithubConfig
 }
 
 // GithubAppTemporarySecrets holds app credentials obtained from github after creation.
@@ -60,8 +63,21 @@ type GithubAppTemporarySecrets struct {
 	URL string
 }
 
+type GithubReview struct {
+	ID          githubv4.ID
+	SubmittedAt githubv4.DateTime
+	Author      struct {
+		Login githubv4.String
+	}
+}
+
+type GithubPRReviewSummary struct {
+	ReviewDecision githubv4.String
+	Reviews        []GithubReview
+}
+
 // NewGithubClient returns a valid GitHub client.
-func NewGithubClient(hostname string, credentials GithubCredentials, logger logging.SimpleLogging) (*GithubClient, error) {
+func NewGithubClient(hostname string, credentials GithubCredentials, config GithubConfig, logger logging.SimpleLogging) (*GithubClient, error) {
 	transport, err := credentials.Client()
 	if err != nil {
 		return nil, errors.Wrap(err, "error initializing github authentication transport")
@@ -81,28 +97,8 @@ func NewGithubClient(hostname string, credentials GithubCredentials, logger logg
 		graphqlURL = fmt.Sprintf("https://%s/api/graphql", apiURL.Host)
 	}
 
-	// shurcooL's githubv4 library has a client ctor, but it doesn't support schema
-	// previews, which need custom Accept headers (https://developer.github.com/v4/previews)
-	// So for now use the graphql client, since the githubv4 library was basically
-	// a simple wrapper around it. And instead of using shurcooL's graphql lib, use
-	// Laisky's, since shurcooL's doesn't support custom headers.
-	// Once the Minimize Comment schema is official, this can revert back to using
-	// shurcooL's libraries completely.
-	v4MutateClient := graphql.NewClient(
-		graphqlURL,
-		transport,
-		graphql.WithHeader("Accept", "application/vnd.github.queen-beryl-preview+json"),
-	)
-	token, err := credentials.GetToken()
-	if err != nil {
-		return nil, errors.Wrap(err, "Failed to get GitHub token")
-	}
-	src := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: token},
-	)
-	httpClient := oauth2.NewClient(context.Background(), src)
 	// Use the client from shurcooL's githubv4 library for queries.
-	v4QueryClient := githubv4.NewEnterpriseClient(graphqlURL, httpClient)
+	v4Client := githubv4.NewEnterpriseClient(graphqlURL, transport)
 
 	user, err := credentials.GetUser()
 	logger.Debug("GH User: %s", user)
@@ -111,12 +107,12 @@ func NewGithubClient(hostname string, credentials GithubCredentials, logger logg
 		return nil, errors.Wrap(err, "getting user")
 	}
 	return &GithubClient{
-		user:           user,
-		client:         client,
-		v4MutateClient: v4MutateClient,
-		v4QueryClient:  v4QueryClient,
-		ctx:            context.Background(),
-		logger:         logger,
+		user:     user,
+		client:   client,
+		v4Client: v4Client,
+		ctx:      context.Background(),
+		logger:   logger,
+		config:   config,
 	}, nil
 }
 
@@ -202,6 +198,13 @@ func (g *GithubClient) CreateComment(repo models.Repo, pullNum int, comment stri
 	return nil
 }
 
+// ReactToComment adds a reaction to a comment.
+func (g *GithubClient) ReactToComment(repo models.Repo, commentID int64, reaction string) error {
+	g.logger.Debug("POST /repos/%v/%v/issues/comments/%d/reactions", repo.Owner, repo.Name, commentID)
+	_, _, err := g.client.Reactions.CreateIssueCommentReaction(g.ctx, repo.Owner, repo.Name, commentID, reaction)
+	return err
+}
+
 func (g *GithubClient) HidePrevCommandComments(repo models.Repo, pullNum int, command string) error {
 	var allComments []*github.IssueComment
 	nextPage := 0
@@ -250,18 +253,68 @@ func (g *GithubClient) HidePrevCommandComments(repo models.Repo, pullNum int, co
 				}
 			} `graphql:"minimizeComment(input:$input)"`
 		}
-		input := map[string]interface{}{
-			"input": githubv4.MinimizeCommentInput{
-				Classifier: githubv4.ReportedContentClassifiersOutdated,
-				SubjectID:  comment.GetNodeID(),
-			},
+		input := githubv4.MinimizeCommentInput{
+			Classifier: githubv4.ReportedContentClassifiersOutdated,
+			SubjectID:  comment.GetNodeID(),
 		}
-		if err := g.v4MutateClient.Mutate(g.ctx, &m, input); err != nil {
+		if err := g.v4Client.Mutate(g.ctx, &m, input, nil); err != nil {
 			return errors.Wrapf(err, "minimize comment %s", comment.GetNodeID())
 		}
 	}
 
 	return nil
+}
+
+// getPRReviews Retrieves PR reviews for a pull request on a specific repository.
+// The reviews are being retrieved using pages with the size of 10 reviews.
+func (g *GithubClient) getPRReviews(repo models.Repo, pull models.PullRequest) (GithubPRReviewSummary, error) {
+	var query struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewDecision githubv4.String
+				Reviews        struct {
+					Nodes []GithubReview
+					// contains pagination information
+					PageInfo struct {
+						EndCursor   githubv4.String
+						HasNextPage githubv4.Boolean
+					}
+				} `graphql:"reviews(first: $entries, after: $reviewCursor, states: $reviewState)"`
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	variables := map[string]interface{}{
+		"owner":        githubv4.String(repo.Owner),
+		"name":         githubv4.String(repo.Name),
+		"number":       githubv4.Int(pull.Num),
+		"entries":      githubv4.Int(10),
+		"reviewState":  []githubv4.PullRequestReviewState{githubv4.PullRequestReviewStateApproved},
+		"reviewCursor": (*githubv4.String)(nil), // initialize the reviewCursor with null
+	}
+
+	var allReviews []GithubReview
+	for {
+		err := g.v4Client.Query(g.ctx, &query, variables)
+		if err != nil {
+			return GithubPRReviewSummary{
+				query.Repository.PullRequest.ReviewDecision,
+				allReviews,
+			}, errors.Wrap(err, "getting reviewDecision")
+		}
+
+		allReviews = append(allReviews, query.Repository.PullRequest.Reviews.Nodes...)
+		// if we don't have a NextPage pointer, we have requested all pages
+		if !query.Repository.PullRequest.Reviews.PageInfo.HasNextPage {
+			break
+		}
+		// set the end cursor, so the next batch of reviews is going to be requested and not the same again
+		variables["reviewCursor"] = githubv4.NewString(query.Repository.PullRequest.Reviews.PageInfo.EndCursor)
+	}
+	return GithubPRReviewSummary{
+		query.Repository.PullRequest.ReviewDecision,
+		allReviews,
+	}, nil
 }
 
 // PullIsApproved returns true if the pull request was approved.
@@ -284,7 +337,7 @@ func (g *GithubClient) PullIsApproved(repo models.Repo, pull models.PullRequest)
 				return models.ApprovalStatus{
 					IsApproved: true,
 					ApprovedBy: *review.User.Login,
-					Date:       *review.SubmittedAt,
+					Date:       review.SubmittedAt.Time,
 				}, nil
 			}
 		}
@@ -296,12 +349,145 @@ func (g *GithubClient) PullIsApproved(repo models.Repo, pull models.PullRequest)
 	return approvalStatus, nil
 }
 
+// DiscardReviews dismisses all reviews on a pull request
+func (g *GithubClient) DiscardReviews(repo models.Repo, pull models.PullRequest) error {
+	reviewStatus, err := g.getPRReviews(repo, pull)
+	if err != nil {
+		return err
+	}
+
+	// https://docs.github.com/en/graphql/reference/input-objects#dismisspullrequestreviewinput
+	var mutation struct {
+		DismissPullRequestReview struct {
+			PullRequestReview struct {
+				ID githubv4.ID
+			}
+		} `graphql:"dismissPullRequestReview(input: $input)"`
+	}
+
+	// dismiss every review one by one.
+	// currently there is no way to dismiss them in one mutation.
+	for _, review := range reviewStatus.Reviews {
+		input := githubv4.DismissPullRequestReviewInput{
+			PullRequestReviewID: review.ID,
+			Message:             pullRequestDismissalMessage,
+			ClientMutationID:    clientMutationID,
+		}
+		mutationResult := &mutation
+		err := g.v4Client.Mutate(g.ctx, mutationResult, input, nil)
+		if err != nil {
+			return errors.Wrap(err, "dismissing reviewDecision")
+		}
+	}
+	return nil
+}
+
+// isRequiredCheck is a helper function to determine if a check is required or not
+func isRequiredCheck(check string, required []string) bool {
+	//in go1.18 can prob replace this with slices.Contains
+	for _, r := range required {
+		if r == check {
+			return true
+		}
+	}
+
+	return false
+}
+
+// GetCombinedStatusMinusApply checks Statuses for PR, excluding atlantis apply. Returns true if all other statuses are not in failure.
+func (g *GithubClient) GetCombinedStatusMinusApply(repo models.Repo, pull *github.PullRequest, vcstatusname string) (bool, error) {
+	//check combined status api
+	status, _, err := g.client.Repositories.GetCombinedStatus(g.ctx, repo.Owner, repo.Name, *pull.Head.Ref, nil)
+	if err != nil {
+		return false, errors.Wrap(err, "getting combined status")
+	}
+
+	//iterate over statuses - return false if we find one that isn't "apply" and doesn't have state = "success"
+	for _, r := range status.Statuses {
+		if strings.HasPrefix(*r.Context, fmt.Sprintf("%s/%s", vcstatusname, command.Apply.String())) {
+			continue
+		}
+		if *r.State != "success" {
+			return false, nil
+		}
+	}
+
+	//get required status checks
+	required, _, err := g.client.Repositories.GetBranchProtection(context.Background(), repo.Owner, repo.Name, *pull.Base.Ref)
+	if err != nil {
+		return false, errors.Wrap(err, "getting required status checks")
+	}
+
+	//check check suite/check run api
+	checksuites, _, err := g.client.Checks.ListCheckSuitesForRef(context.Background(), repo.Owner, repo.Name, *pull.Head.Ref, nil)
+	if err != nil {
+		return false, errors.Wrap(err, "getting check suites for ref")
+	}
+
+	//iterate over check completed check suites - return false if we find one that doesnt have conclusion = "success"
+	for _, c := range checksuites.CheckSuites {
+		if *c.Status == "completed" {
+			//iterate over the runs inside the suite
+			suite, _, err := g.client.Checks.ListCheckRunsCheckSuite(context.Background(), repo.Owner, repo.Name, *c.ID, nil)
+			if err != nil {
+				return false, errors.Wrap(err, "getting check runs for check suite")
+			}
+
+			for _, r := range suite.CheckRuns {
+				//check to see if the check is required
+				if isRequiredCheck(*r.Name, required.RequiredStatusChecks.Contexts) {
+					if *c.Conclusion == "success" {
+						continue
+					} else {
+						return false, nil
+					}
+				} else {
+					//ignore checks that arent required
+					continue
+				}
+
+			}
+		}
+	}
+
+	return true, nil
+}
+
+// GetPullReviewDecision gets the pull review decision, which takes into account CODEOWNERS
+func (g *GithubClient) GetPullReviewDecision(repo models.Repo, pull models.PullRequest) (approvalStatus bool, err error) {
+	var query struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewDecision string
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	variables := map[string]interface{}{
+		"owner":  githubv4.String(repo.Owner),
+		"name":   githubv4.String(repo.Name),
+		"number": githubv4.Int(pull.Num),
+	}
+
+	err = g.v4Client.Query(g.ctx, &query, variables)
+	if err != nil {
+		return approvalStatus, errors.Wrap(err, "getting reviewDecision")
+	}
+
+	if query.Repository.PullRequest.ReviewDecision == "APPROVED" || len(query.Repository.PullRequest.ReviewDecision) == 0 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 // PullIsMergeable returns true if the pull request is mergeable.
 func (g *GithubClient) PullIsMergeable(repo models.Repo, pull models.PullRequest, vcsstatusname string) (bool, error) {
 	githubPR, err := g.GetPullRequest(repo, pull.Num)
 	if err != nil {
 		return false, errors.Wrap(err, "getting pull request")
 	}
+
 	state := githubPR.GetMergeableState()
 	// We map our mergeable check to when the GitHub merge button is clickable.
 	// This corresponds to the following states:
@@ -313,6 +499,29 @@ func (g *GithubClient) PullIsMergeable(repo models.Repo, pull models.PullRequest
 	//            hooks. Merging is allowed (green box).
 	// See: https://github.com/octokit/octokit.net/issues/1763
 	if state != "clean" && state != "unstable" && state != "has_hooks" {
+		//mergeable bypass apply code hidden by feature flag
+		if g.config.AllowMergeableBypassApply {
+			g.logger.Debug("AllowMergeableBypassApply feature flag is enabled - attempting to bypass apply from mergeable requirements")
+			if state == "blocked" {
+				//check status excluding atlantis apply
+				status, err := g.GetCombinedStatusMinusApply(repo, githubPR, vcsstatusname)
+				if err != nil {
+					return false, errors.Wrap(err, "getting pull request status")
+				}
+
+				//check to see if pr is approved using reviewDecision
+				approved, err := g.GetPullReviewDecision(repo, pull)
+				if err != nil {
+					return false, errors.Wrap(err, "getting pull request reviewDecision")
+				}
+
+				//if all other status checks EXCEPT atlantis/apply are successful, and the PR is approved based on reviewDecision, let it proceed
+				if status && approved {
+					return true, nil
+				}
+			}
+		}
+
 		return false, nil
 	}
 	return true, nil
@@ -434,6 +643,7 @@ func (g *GithubClient) GetTeamNamesForUser(repo models.Repo, user models.User) (
 				Edges []struct {
 					Node struct {
 						Name string
+						Slug string
 					}
 				}
 				PageInfo struct {
@@ -446,12 +656,12 @@ func (g *GithubClient) GetTeamNamesForUser(repo models.Repo, user models.User) (
 	var teamNames []string
 	ctx := context.Background()
 	for {
-		err := g.v4QueryClient.Query(ctx, &q, variables)
+		err := g.v4Client.Query(ctx, &q, variables)
 		if err != nil {
 			return nil, err
 		}
 		for _, edge := range q.Organization.Teams.Edges {
-			teamNames = append(teamNames, edge.Node.Name)
+			teamNames = append(teamNames, edge.Node.Name, edge.Node.Slug)
 		}
 		if !q.Organization.Teams.PageInfo.HasNextPage {
 			break
@@ -476,12 +686,12 @@ func (g *GithubClient) ExchangeCode(code string) (*GithubAppTemporarySecrets, er
 	return data, err
 }
 
-// DownloadRepoConfigFile return `atlantis.yaml` content from VCS (which support fetch a single file from repository)
-// The first return value indicate that repo contain atlantis.yaml or not
-// if BaseRepo had one repo config file, its content will placed on the second return value
-func (g *GithubClient) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
+// GetFileContent a repository file content from VCS (which support fetch a single file from repository)
+// The first return value indicates whether the repo contains a file or not
+// if BaseRepo had a file, its content will placed on the second return value
+func (g *GithubClient) GetFileContent(pull models.PullRequest, fileName string) (bool, []byte, error) {
 	opt := github.RepositoryContentGetOptions{Ref: pull.HeadBranch}
-	fileContent, _, resp, err := g.client.Repositories.GetContents(g.ctx, pull.BaseRepo.Owner, pull.BaseRepo.Name, config.AtlantisYAMLFilename, &opt)
+	fileContent, _, resp, err := g.client.Repositories.GetContents(g.ctx, pull.BaseRepo.Owner, pull.BaseRepo.Name, fileName, &opt)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return false, []byte{}, nil

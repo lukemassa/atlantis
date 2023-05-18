@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	. "github.com/petergtz/pegomock"
+	pegomock "github.com/petergtz/pegomock"
 	"github.com/runatlantis/atlantis/server/events"
 	eventMocks "github.com/runatlantis/atlantis/server/events/mocks"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs"
-	"github.com/runatlantis/atlantis/server/events/vcs/fixtures"
 	vcsMocks "github.com/runatlantis/atlantis/server/events/vcs/mocks"
+	"github.com/runatlantis/atlantis/server/events/vcs/testdata"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
 )
@@ -18,12 +19,10 @@ import (
 // Test that if we don't have any existing files, we check out the repo with a github app.
 func TestClone_GithubAppNoneExisting(t *testing.T) {
 	// Initialize the git repo.
-	repoDir, cleanup := initRepo(t)
-	defer cleanup()
+	repoDir := initRepo(t)
 	expCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 
-	dataDir, cleanup2 := TempDir(t)
-	defer cleanup2()
+	dataDir := t.TempDir()
 
 	wd := &events.FileWorkspace{
 		DataDir:                     dataDir,
@@ -32,13 +31,13 @@ func TestClone_GithubAppNoneExisting(t *testing.T) {
 	}
 
 	defer disableSSLVerification()()
-	testServer, err := fixtures.GithubAppTestServer(t)
+	testServer, err := testdata.GithubAppTestServer(t)
 	Ok(t, err)
 
 	gwd := &events.GithubAppWorkingDir{
 		WorkingDir: wd,
 		Credentials: &vcs.GithubAppCredentials{
-			Key:      []byte(fixtures.GithubPrivateKey),
+			Key:      []byte(testdata.GithubPrivateKey),
 			AppID:    1,
 			Hostname: testServer,
 		},
@@ -59,6 +58,8 @@ func TestClone_GithubAppNoneExisting(t *testing.T) {
 }
 
 func TestClone_GithubAppSetsCorrectUrl(t *testing.T) {
+	pegomock.RegisterMockTestingT(t)
+
 	workingDir := eventMocks.NewMockWorkingDir()
 
 	credentials := vcsMocks.NewMockGithubCredentials()
@@ -84,8 +85,9 @@ func TestClone_GithubAppSetsCorrectUrl(t *testing.T) {
 	headRepo := baseRepo
 
 	modifiedBaseRepo := baseRepo
-	modifiedBaseRepo.CloneURL = "https://x-access-token:token@github.com/runatlantis/atlantis.git"
-	modifiedBaseRepo.SanitizedCloneURL = "https://x-access-token:<redacted>@github.com/runatlantis/atlantis.git"
+	// remove credentials from both urls since we want to use the credential store
+	modifiedBaseRepo.CloneURL = "https://github.com/runatlantis/atlantis.git"
+	modifiedBaseRepo.SanitizedCloneURL = "https://github.com/runatlantis/atlantis.git"
 
 	When(credentials.GetToken()).ThenReturn("token", nil)
 	When(workingDir.Clone(logger, modifiedBaseRepo, models.PullRequest{BaseRepo: modifiedBaseRepo}, "default")).ThenReturn(
@@ -93,6 +95,8 @@ func TestClone_GithubAppSetsCorrectUrl(t *testing.T) {
 	)
 
 	_, success, _ := ghAppWorkingDir.Clone(logger, headRepo, models.PullRequest{BaseRepo: baseRepo}, "default")
+
+	workingDir.VerifyWasCalledOnce().Clone(logger, modifiedBaseRepo, models.PullRequest{BaseRepo: modifiedBaseRepo}, "default")
 
 	Assert(t, success == true, "clone url mutation error")
 }

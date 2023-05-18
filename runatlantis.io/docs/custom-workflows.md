@@ -47,6 +47,20 @@ workflows:
       - init
       - plan:
           extra_args: ["-var-file", "production.tfvars"]
+    apply:
+      steps:
+        - apply:
+            extra_args: ["-var-file", "production.tfvars"]
+    import:
+      steps:
+        - init
+        - import:
+            extra_args: ["-var-file", "production.tfvars"]
+    state_rm:
+      steps:
+        - init
+        - state_rm:
+            extra_args: ["-lock=false"]
 ```
 Then in your repo-level `atlantis.yaml` file, you would reference the workflows:
 ```yaml
@@ -103,7 +117,7 @@ workflows:
           extra_args: ["-lock=false"]
 ```
 
-If [policy checking](https://www.runatlantis.io/docs/policy-checking.html#how-it-works) is enabled, `extra_args` can also be used to change the default behaviour of conftest.
+If [policy checking](/docs/policy-checking.html#how-it-works) is enabled, `extra_args` can also be used to change the default behaviour of conftest.
 
 ```yaml
 workflows:
@@ -142,6 +156,76 @@ workflows:
       # Again, you must use the $PLANFILE environment variable.
       - run: terraform apply $PLANFILE
 ```
+
+### cdktf
+Here are the requirements to enable [cdktf](https://developer.hashicorp.com/terraform/cdktf)
+
+- A custom image with `cdktf` installed
+- The autoplan file updated to trigger off of `**/cdk.tf.json`
+- The output of `cdktf synth` has to be committed to the pull request
+- Optional: Use `pre_workflow_hooks` to run `cdktf synth` as a double check
+- Optional: There isn't a requirement to use a repo `atlantis.yaml` but one can be leveraged if needed.
+
+#### custom image
+
+```dockerfile
+# Dockerfile
+FROM ghcr.io/runatlantis/atlantis:v0.19.7
+
+RUN apk add npm && npm i -g cdktf-cli
+```
+
+#### server config
+
+```bash
+# env variables
+ATLANTIS_AUTOPLAN_FILE_LIST="**/*.tf,**/*.tfvars,**/*.tfvars.json,**/cdk.tf.json"
+```
+
+OR
+
+`atlantis server --config config.yaml`
+```yaml
+# config.yaml
+autoplan-file-list: "**/*.tf,**/*.tfvars,**/*.tfvars.json,**/cdk.tf.json"
+```
+
+#### server repo config
+
+Use `pre_workflow_hooks`
+
+`atlantis server --repo-config="repos.yaml"`
+```yaml
+# repos.yaml
+repos:
+  - id: /.*cdktf.*/
+    pre_workflow_hooks:
+      - run: npm i && cdktf get && cdktf synth
+```
+
+#### repo structure
+
+This is the git repo structure after running `cdktf synth`. The `cdk.tf.json` files contain the HCL that atlantis can run.
+
+```bash
+$ tree --gitignore
+.
+├── cdktf.json
+├── cdktf.out
+│   ├── manifest.json
+│   └── stacks
+│       └── eks
+│           └── cdk.tf.json
+```
+
+#### workflow
+
+1. Container orchestrator (k8s/fargate/ecs/etc) uses the custom docker image of atlantis with `cdktf` installed with the `--autoplan-file-list` to trigger on json files
+1. PR branch is pushed up containing `cdktf` changes and generated hcl json
+1. Atlantis checks out the branch in the repo
+1. Atlantis runs the `npm i && cdktf get && cdktf synth` command in the repo root as a step in `pre_workflow_hooks` (as a double check described above)
+1. Atlantis detects the change to the generated hcl json files in a number of `dir`s
+1. Atlantis then runs `terraform` workflows in the respective `dir`s as usual
 
 ### Terragrunt
 Atlantis supports running custom commands in place of the default Atlantis
@@ -294,12 +378,16 @@ projects:
 ```yaml
 plan:
 apply:
+import:
+state_rm:
 ```
 
-| Key   | Type            | Default               | Required | Description                    |
-|-------|-----------------|-----------------------|----------|--------------------------------|
-| plan  | [Stage](#stage) | `steps: [init, plan]` | no       | How to plan for this project.  |
-| apply | [Stage](#stage) | `steps: [apply]`      | no       | How to apply for this project. |
+| Key      | Type            | Default                   | Required | Description                           |
+|----------|-----------------|---------------------------|----------|---------------------------------------|
+| plan     | [Stage](#stage) | `steps: [init, plan]`     | no       | How to plan for this project.         |
+| apply    | [Stage](#stage) | `steps: [apply]`          | no       | How to apply for this project.        |
+| import   | [Stage](#stage) | `steps: [init, import]`   | no       | How to import for this project.       |
+| state_rm | [Stage](#stage) | `steps: [init, state_rm]` | no       | How to run state rm for this project. |
 
 ### Stage
 ```yaml
@@ -315,16 +403,18 @@ steps:
 | steps | array[[Step](#step)] | `[]`    | no       | List of steps for this stage. If the steps key is empty, no steps will be run for this stage. |
 
 ### Step
-#### Built-In Commands: init, plan, apply
+#### Built-In Commands
 Steps can be a single string for a built-in command.
 ```yaml
 - init
 - plan
 - apply
+- import
+- state_rm
 ```
-| Key             | Type   | Default | Required | Description                                                                                            |
-| --------------- | ------ | ------- | -------- | ------------------------------------------------------------------------------------------------------ |
-| init/plan/apply | string | none    | no       | Use a built-in command without additional configuration. Only `init`, `plan` and `apply` are supported |
+| Key                             | Type   | Default | Required | Description                                                                                                                  |
+|---------------------------------|--------|---------|----------|------------------------------------------------------------------------------------------------------------------------------|
+| init/plan/apply/import/state_rm | string | none    | no       | Use a built-in command without additional configuration. Only `init`, `plan`, `apply`, `import` and `state_rm` are supported |
 
 #### Built-In Command With Extra Args
 A map from string to `extra_args` for a built-in command with extra arguments.
@@ -335,10 +425,14 @@ A map from string to `extra_args` for a built-in command with extra arguments.
     extra_args: [arg1, arg2]
 - apply:
     extra_args: [arg1, arg2]
+- import:
+    extra_args: [arg1, arg2]
+- state_rm:
+    extra_args: [arg1, arg2]
 ```
-| Key             | Type                               | Default | Required | Description                                                                                                                                         |
-|-----------------|------------------------------------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
-| init/plan/apply | map[`extra_args` -> array[string]] | none    | no       | Use a built-in command and append `extra_args`. Only `init`, `plan` and `apply` are supported as keys and only `extra_args` is supported as a value |
+| Key                             | Type                               | Default | Required | Description                                                                                                                                                               |
+|---------------------------------|------------------------------------|---------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| init/plan/apply/import/state_rm | map[`extra_args` -> array[string]] | none    | no       | Use a built-in command and append `extra_args`. Only `init`, `plan`, `apply`, `import` and `state_rm` are supported as keys and only `extra_args` is supported as a value |
 
 #### Custom `run` Command
 Or a custom command
@@ -350,7 +444,8 @@ Or a custom command
 | run | string | none    | no       | Run a custom command |
 
 ::: tip Notes
-* `run` steps are executed with the following environment variables:
+* `run` steps in the main `workflow` are executed with the following environment variables:
+*  note: these variables are not available to `pre` or `post` workflows
   * `WORKSPACE` - The Terraform workspace used for this project, ex. `default`.
     * NOTE: if the step is executed before `init` then Atlantis won't have switched to this workspace yet.
   * `ATLANTIS_TERRAFORM_VERSION` - The version of Terraform used for this project, ex. `0.11.0`.
@@ -361,6 +456,8 @@ Or a custom command
   * `SHOWFILE` - Absolute path to the location where Atlantis expects the plan in json format to
   either be generated (by show) or already exist (if running policy checks). Can be used to
   override the built-in `plan`/`apply` commands, ex. `run: terraform show -json $PLANFILE > $SHOWFILE`.
+  * `POLICYCHECKFILE` - Absolute path to the location of policy check output if Atlantis runs policy checks.
+  See [policy checking](/docs/policy-checking.html#data-for-custom-run-steps) for information of data structure.
   * `BASE_REPO_NAME` - Name of the repository that the pull request will be merged into, ex. `atlantis`.
   * `BASE_REPO_OWNER` - Owner of the repository that the pull request will be merged into, ex. `runatlantis`.
   * `HEAD_REPO_NAME` - Name of the repository that is getting merged into the base repository, ex. `atlantis`.
@@ -370,6 +467,7 @@ Or a custom command
   * `BASE_BRANCH_NAME` - Name of the base branch of the pull request (the branch that the pull request is getting merged into)
   * `PROJECT_NAME` - Name of the project configured in `atlantis.yaml`. If no project name is configured this will be an empty string.
   * `PULL_NUM` - Pull request number or ID, ex. `2`.
+  * `PULL_URL` - Pull request URL, ex. `https://github.com/runatlantis/atlantis/pull/2`.
   * `PULL_AUTHOR` - Username of the pull request author, ex. `acme-user`.
   * `REPO_REL_DIR` - The relative path of the project in the repository. For example if your project is in `dir1/dir2/` then this will be set to `"dir1/dir2"`. If your project is at the root this will be `"."`.
   * `USER_NAME` - Username of the VCS user running command, ex. `acme-user`. During an autoplan, the user will be the Atlantis API user, ex. `atlantis`.
@@ -414,10 +512,10 @@ to all steps defined **below** the `multienv` step.
 ```yaml
 - multienv: custom-command
 ```
-| Key      | Type   | Default | Required | Description                                   |
-|----------|--------|---------|----------|-----------------------------------------------|
-| multienv | string | none    | no       | Run a custom command and add set              |
-|          |        |         |          | environment variables according to the result |
+| Key      | Type   | Default | Required | Description                                                                    |
+|----------|--------|---------|----------|--------------------------------------------------------------------------------|
+| multienv | string | none    | no       | Run a custom command and add set environment variables according to the result |
+
 The result of the executed command must have a fixed format:
 EnvVar1Name=value1,EnvVar2Name=value2,EnvVar3Name=value3
 
@@ -427,4 +525,3 @@ The name-value pairs in the result are added as environment variables if success
 * `multienv` `command`'s can use any of the built-in environment variables available
   to `run` commands. 
 :::
-

@@ -3,7 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the License);
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-//    http://www.apache.org/licenses/LICENSE-2.0
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an AS IS BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -22,16 +24,31 @@ import (
 	"github.com/spf13/viper"
 )
 
-const atlantisVersion = "0.19.7"
+// All of this is filled in by goreleaser upon release
+// https://goreleaser.com/cookbooks/using-main.version/
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func main() {
+
 	v := viper.New()
 
 	logger, err := logging.NewStructuredLogger()
 
+	logger.Debug("atlantis %s, commit %s, built at %s\n", version, commit, date)
 	if err != nil {
 		panic(fmt.Sprintf("unable to initialize logger. %s", err.Error()))
 	}
+
+	var sha = commit
+	if len(commit) >= 7 {
+		sha = commit[:7]
+	}
+
+	atlantisVersion := fmt.Sprintf("%s (commit: %s) (build date: %s)", version, sha, date)
 
 	// We're creating commands manually here rather than using init() functions
 	// (as recommended by cobra) because it makes testing easier.

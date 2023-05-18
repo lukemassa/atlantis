@@ -16,7 +16,7 @@ package webhooks
 import (
 	"fmt"
 
-	"github.com/nlopes/slack"
+	"github.com/slack-go/slack"
 )
 
 const (
@@ -24,7 +24,7 @@ const (
 	slackFailureColour = "danger"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_slack_client.go SlackClient
+//go:generate pegomock generate -m --package mocks -o mocks/mock_slack_client.go SlackClient
 
 // SlackClient handles making API calls to Slack.
 type SlackClient interface {
@@ -33,14 +33,14 @@ type SlackClient interface {
 	PostMessage(channel string, applyResult ApplyResult) error
 }
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_underlying_slack_client.go UnderlyingSlackClient
+//go:generate pegomock generate -m --package mocks -o mocks/mock_underlying_slack_client.go UnderlyingSlackClient
 
 // UnderlyingSlackClient wraps the nlopes/slack.Client implementation so
 // we can mock it during tests.
 type UnderlyingSlackClient interface {
 	AuthTest() (response *slack.AuthTestResponse, error error)
 	GetConversations(conversationParams *slack.GetConversationsParameters) (channels []slack.Channel, nextCursor string, err error)
-	PostMessage(channel, text string, parameters slack.PostMessageParameters) (string, string, error)
+	PostMessage(channelID string, options ...slack.MsgOption) (string, string, error)
 }
 
 type DefaultSlackClient struct {
@@ -65,11 +65,13 @@ func (d *DefaultSlackClient) TokenIsSet() bool {
 }
 
 func (d *DefaultSlackClient) PostMessage(channel string, applyResult ApplyResult) error {
-	params := slack.NewPostMessageParameters()
-	params.Attachments = d.createAttachments(applyResult)
-	params.AsUser = true
-	params.EscapeText = false
-	_, _, err := d.Slack.PostMessage(channel, "", params)
+	attachments := d.createAttachments(applyResult)
+	_, _, err := d.Slack.PostMessage(
+		channel,
+		slack.MsgOptionAsUser(true),
+		slack.MsgOptionText("", false),
+		slack.MsgOptionAttachments(attachments[0]),
+	)
 	return err
 }
 

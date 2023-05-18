@@ -23,7 +23,10 @@ type RepoCfg struct {
 	ParallelPlan              bool
 	ParallelPolicyCheck       bool
 	DeleteSourceBranchOnMerge *bool
+	RepoLocking               *bool
+	EmojiReaction             string
 	AllowedRegexpPrefixes     []string
+	AbortOnExcecutionOrderFail bool
 }
 
 func (r RepoCfg) FindProjectsByDirWorkspace(repoRelDir string, workspace string) []Project {
@@ -119,13 +122,17 @@ func (r RepoCfg) ValidateWorkspaceAllowed(repoRelDir string, workspace string) e
 
 type Project struct {
 	Dir                       string
+	BranchRegex               *regexp.Regexp
 	Workspace                 string
 	Name                      *string
 	WorkflowName              *string
 	TerraformVersion          *version.Version
 	Autoplan                  Autoplan
+	PlanRequirements          []string
 	ApplyRequirements         []string
+	ImportRequirements        []string
 	DeleteSourceBranchOnMerge *bool
+	RepoLocking               *bool
 	ExecutionOrderGroup       int
 }
 
@@ -165,4 +172,6 @@ type Workflow struct {
 	Apply       Stage
 	Plan        Stage
 	PolicyCheck Stage
+	Import      Stage
+	StateRm     Stage
 }

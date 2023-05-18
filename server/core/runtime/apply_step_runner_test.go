@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,11 +12,11 @@ import (
 	. "github.com/petergtz/pegomock"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/core/runtime"
+	runtimemocks "github.com/runatlantis/atlantis/server/core/runtime/mocks"
 	runtimemodels "github.com/runatlantis/atlantis/server/core/runtime/models"
 	"github.com/runatlantis/atlantis/server/core/terraform/mocks"
 	matchers2 "github.com/runatlantis/atlantis/server/core/terraform/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/events/command"
-	mocks2 "github.com/runatlantis/atlantis/server/events/mocks"
 	"github.com/runatlantis/atlantis/server/events/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
@@ -37,8 +36,7 @@ func TestRun_NoDir(t *testing.T) {
 }
 
 func TestRun_NoPlanFile(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	o := runtime.ApplyStepRunner{
 		TerraformExecutor: nil,
 	}
@@ -50,10 +48,9 @@ func TestRun_NoPlanFile(t *testing.T) {
 }
 
 func TestRun_Success(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	planPath := filepath.Join(tmpDir, "workspace.tfplan")
-	err := ioutil.WriteFile(planPath, nil, 0600)
+	err := os.WriteFile(planPath, nil, 0600)
 	logger := logging.NewNoopLogger(t)
 	ctx := command.ProjectContext{
 		Log:                logger,
@@ -69,7 +66,7 @@ func TestRun_Success(t *testing.T) {
 		TerraformExecutor: terraform,
 	}
 
-	When(terraform.RunCommandWithVersion(matchers.AnyModelsProjectCommandContext(), AnyString(), AnyStringSlice(), matchers2.AnyMapOfStringToString(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
+	When(terraform.RunCommandWithVersion(matchers.AnyCommandProjectContext(), AnyString(), AnyStringSlice(), matchers2.AnyMapOfStringToString(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
 		ThenReturn("output", nil)
 	output, err := o.Run(ctx, []string{"extra", "args"}, tmpDir, map[string]string(nil))
 	Ok(t, err)
@@ -81,10 +78,9 @@ func TestRun_Success(t *testing.T) {
 
 func TestRun_AppliesCorrectProjectPlan(t *testing.T) {
 	// When running for a project, the planfile has a different name.
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	planPath := filepath.Join(tmpDir, "projectname-default.tfplan")
-	err := ioutil.WriteFile(planPath, nil, 0600)
+	err := os.WriteFile(planPath, nil, 0600)
 
 	logger := logging.NewNoopLogger(t)
 	ctx := command.ProjectContext{
@@ -102,7 +98,7 @@ func TestRun_AppliesCorrectProjectPlan(t *testing.T) {
 		TerraformExecutor: terraform,
 	}
 
-	When(terraform.RunCommandWithVersion(matchers.AnyModelsProjectCommandContext(), AnyString(), AnyStringSlice(), matchers2.AnyMapOfStringToString(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
+	When(terraform.RunCommandWithVersion(matchers.AnyCommandProjectContext(), AnyString(), AnyStringSlice(), matchers2.AnyMapOfStringToString(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
 		ThenReturn("output", nil)
 	output, err := o.Run(ctx, []string{"extra", "args"}, tmpDir, map[string]string(nil))
 	Ok(t, err)
@@ -113,8 +109,7 @@ func TestRun_AppliesCorrectProjectPlan(t *testing.T) {
 }
 
 func TestRun_UsesConfiguredTFVersion(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	planPath := filepath.Join(tmpDir, "workspace.tfplan")
 	err := os.WriteFile(planPath, nil, 0600)
 	Ok(t, err)
@@ -135,7 +130,7 @@ func TestRun_UsesConfiguredTFVersion(t *testing.T) {
 		TerraformExecutor: terraform,
 	}
 
-	When(terraform.RunCommandWithVersion(matchers.AnyModelsProjectCommandContext(), AnyString(), AnyStringSlice(), matchers2.AnyMapOfStringToString(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
+	When(terraform.RunCommandWithVersion(matchers.AnyCommandProjectContext(), AnyString(), AnyStringSlice(), matchers2.AnyMapOfStringToString(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
 		ThenReturn("output", nil)
 	output, err := o.Run(ctx, []string{"extra", "args"}, tmpDir, map[string]string(nil))
 	Ok(t, err)
@@ -200,8 +195,7 @@ func TestRun_UsingTarget(t *testing.T) {
 		descrip := fmt.Sprintf("comments flags: %s extra args: %s",
 			strings.Join(c.commentFlags, ", "), strings.Join(c.extraArgs, ", "))
 		t.Run(descrip, func(t *testing.T) {
-			tmpDir, cleanup := TempDir(t)
-			defer cleanup()
+			tmpDir := t.TempDir()
 			planPath := filepath.Join(tmpDir, "workspace.tfplan")
 			err := os.WriteFile(planPath, nil, 0600)
 			Ok(t, err)
@@ -228,8 +222,7 @@ func TestRun_UsingTarget(t *testing.T) {
 
 // Test that apply works for remote applies.
 func TestRun_RemoteApply_Success(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	planPath := filepath.Join(tmpDir, "workspace.tfplan")
 	planFileContents := `
 An execution plan has been generated and is shown below.
@@ -248,7 +241,7 @@ Plan: 0 to add, 0 to change, 1 to destroy.`
 	RegisterMockTestingT(t)
 	tfOut := fmt.Sprintf(preConfirmOutFmt, planFileContents) + postConfirmOut
 	tfExec := &remoteApplyMock{LinesToSend: tfOut, DoneCh: make(chan bool)}
-	updater := mocks2.NewMockCommitStatusUpdater()
+	updater := runtimemocks.NewMockStatusUpdater()
 	o := runtime.ApplyStepRunner{
 		AsyncTFExec:         tfExec,
 		CommitStatusUpdater: updater,
@@ -274,20 +267,19 @@ null_resource.dir2[1]: Destruction complete after 0s
 Apply complete! Resources: 0 added, 0 changed, 1 destroyed.
 `, output)
 
-	Equals(t, []string{"apply", "-input=false", "extra", "args", "comment", "args"}, tfExec.CalledArgs)
+	Equals(t, []string{"apply", "-input=false", "-no-color", "extra", "args", "comment", "args"}, tfExec.CalledArgs)
 	_, err = os.Stat(planPath)
 	Assert(t, os.IsNotExist(err), "planfile should be deleted")
 
 	// Check that the status was updated with the run url.
 	runURL := "https://app.terraform.io/app/lkysow-enterprises/atlantis-tfe-test-dir2/runs/run-PiDsRYKGcerTttV2"
-	updater.VerifyWasCalledOnce().UpdateProject(ctx, command.Apply, models.PendingCommitStatus, runURL)
-	updater.VerifyWasCalledOnce().UpdateProject(ctx, command.Apply, models.SuccessCommitStatus, runURL)
+	updater.VerifyWasCalledOnce().UpdateProject(ctx, command.Apply, models.PendingCommitStatus, runURL, nil)
+	updater.VerifyWasCalledOnce().UpdateProject(ctx, command.Apply, models.SuccessCommitStatus, runURL, nil)
 }
 
 // Test that if the plan is different, we error out.
 func TestRun_RemoteApply_PlanChanged(t *testing.T) {
-	tmpDir, cleanup := TempDir(t)
-	defer cleanup()
+	tmpDir := t.TempDir()
 	planPath := filepath.Join(tmpDir, "workspace.tfplan")
 	planFileContents := `
 An execution plan has been generated and is shown below.
@@ -312,7 +304,7 @@ Plan: 0 to add, 0 to change, 1 to destroy.`
 	}
 	o := runtime.ApplyStepRunner{
 		AsyncTFExec:         tfExec,
-		CommitStatusUpdater: mocks2.NewMockCommitStatusUpdater(),
+		CommitStatusUpdater: runtimemocks.NewMockStatusUpdater(),
 	}
 	tfVersion, _ := version.NewVersion("0.11.0")
 

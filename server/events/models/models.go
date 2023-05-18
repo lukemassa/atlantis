@@ -3,7 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the License);
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-//    http://www.apache.org/licenses/LICENSE-2.0
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an AS IS BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -68,7 +70,8 @@ func (r Repo) ID() string {
 // NewRepo constructs a Repo object. repoFullName is the owner/repo form,
 // cloneURL can be with or without .git at the end
 // ex. https://github.com/runatlantis/atlantis.git OR
-//     https://github.com/runatlantis/atlantis
+//
+//	https://github.com/runatlantis/atlantis
 func NewRepo(vcsHostType VCSHostType, repoFullName string, cloneURL string, vcsUser string, vcsToken string) (Repo, error) {
 	if repoFullName == "" {
 		return Repo{}, errors.New("repoFullName can't be empty")
@@ -335,8 +338,9 @@ func NewVCSHostType(t string) (VCSHostType, error) {
 // name segments. If the repoFullName is malformed, may return empty
 // strings for owner or repo.
 // Ex. runatlantis/atlantis => (runatlantis, atlantis)
-//     gitlab/subgroup/runatlantis/atlantis => (gitlab/subgroup/runatlantis, atlantis)
-//     azuredevops/project/atlantis => (azuredevops/project, atlantis)
+//
+//	gitlab/subgroup/runatlantis/atlantis => (gitlab/subgroup/runatlantis, atlantis)
+//	azuredevops/project/atlantis => (azuredevops/project, atlantis)
 func SplitRepoFullName(repoFullName string) (owner string, repo string) {
 	lastSlashIdx := strings.LastIndex(repoFullName, "/")
 	if lastSlashIdx == -1 || lastSlashIdx == len(repoFullName)-1 {
@@ -362,49 +366,147 @@ type PlanSuccess struct {
 	HasDiverged bool
 }
 
-// Summary extracts one line summary of plan changes from TerraformOutput.
+type PolicySetResult struct {
+	PolicySetName  string
+	ConftestOutput string
+	Passed         bool
+	ReqApprovals   int
+	CurApprovals   int
+}
+
+// PolicySetApproval tracks the number of approvals a given policy set has.
+type PolicySetStatus struct {
+	PolicySetName string
+	Passed        bool
+	Approvals     int
+}
+
+// Summary regexes
+var (
+	reChangesOutside = regexp.MustCompile(`Note: Objects have changed outside of Terraform`)
+	rePlanChanges    = regexp.MustCompile(`Plan: \d+ to add, \d+ to change, \d+ to destroy.`)
+	reNoChanges      = regexp.MustCompile(`No changes. (Infrastructure is up-to-date|Your infrastructure matches the configuration).`)
+)
+
+// Summary extracts summaries of plan changes from TerraformOutput.
 func (p *PlanSuccess) Summary() string {
 	note := ""
-	r := regexp.MustCompile(`Note: Objects have changed outside of Terraform`)
-	if match := r.FindString(p.TerraformOutput); match != "" {
-		note = fmt.Sprintf("\n**%s**\n", match)
+	if match := reChangesOutside.FindString(p.TerraformOutput); match != "" {
+		note = "\n**" + match + "**\n"
 	}
-
-	r = regexp.MustCompile(`Plan: \d+ to add, \d+ to change, \d+ to destroy.`)
-	if match := r.FindString(p.TerraformOutput); match != "" {
-		return note + match
-	}
-	r = regexp.MustCompile(`No changes. (Infrastructure is up-to-date|Your infrastructure matches the configuration).`)
-	return note + r.FindString(p.TerraformOutput)
+	return note + p.DiffSummary()
 }
+
+// DiffSummary extracts one line summary of plan changes from TerraformOutput.
+func (p *PlanSuccess) DiffSummary() string {
+	if match := rePlanChanges.FindString(p.TerraformOutput); match != "" {
+		return match
+	}
+	return reNoChanges.FindString(p.TerraformOutput)
+}
+
+// NoChanges returns true if the plan has no changes.
+func (p *PlanSuccess) NoChanges() bool {
+	return reNoChanges.MatchString(p.TerraformOutput)
+}
+
+// Diff Markdown regexes
+var (
+	diffKeywordRegex = regexp.MustCompile(`(?m)^( +)([-+~]\s)(.*)(\s=\s|\s->\s|<<|\{|\(known after apply\)| {2,}[^ ]+:.*)(.*)`)
+	diffListRegex    = regexp.MustCompile(`(?m)^( +)([-+~]\s)(".*",)`)
+	diffTildeRegex   = regexp.MustCompile(`(?m)^~`)
+)
 
 // DiffMarkdownFormattedTerraformOutput formats the Terraform output to match diff markdown format
 func (p PlanSuccess) DiffMarkdownFormattedTerraformOutput() string {
-	diffKeywordRegex := regexp.MustCompile(`(?m)^( +)([-+~]\s)(.*)(\s->\s|<<|\{|\(known after apply\)|\[)(.*)`)
-	diffListRegex := regexp.MustCompile(`(?m)^( +)([-+~]\s)(".*",)`)
-	diffTildeRegex := regexp.MustCompile(`(?m)^~`)
-
 	formattedTerraformOutput := diffKeywordRegex.ReplaceAllString(p.TerraformOutput, "$2$1$3$4$5")
 	formattedTerraformOutput = diffListRegex.ReplaceAllString(formattedTerraformOutput, "$2$1$3")
 	formattedTerraformOutput = diffTildeRegex.ReplaceAllString(formattedTerraformOutput, "!")
 
-	return formattedTerraformOutput
+	return strings.TrimSpace(formattedTerraformOutput)
 }
 
-// PolicyCheckSuccess is the result of a successful policy check run.
-type PolicyCheckSuccess struct {
-	// PolicyCheckOutput is the output from policy check binary(conftest|opa)
-	PolicyCheckOutput string
+// PolicyCheckResults is the result of a successful policy check run.
+type PolicyCheckResults struct {
+	// PolicySetResults is the output from policy check binary(conftest|opa)
+	PolicySetResults []PolicySetResult
 	// LockURL is the full URL to the lock held by this policy check.
 	LockURL string
 	// RePlanCmd is the command that users should run to re-plan this project.
 	RePlanCmd string
 	// ApplyCmd is the command that users should run to apply this plan.
 	ApplyCmd string
+	// ApprovePoliciesCmd is the command that users should run to approve policies for this plan.
+	ApprovePoliciesCmd string
 	// HasDiverged is true if we're using the checkout merge strategy and the
 	// branch we're merging into has been updated since we cloned and merged
 	// it.
 	HasDiverged bool
+}
+
+// ImportSuccess is the result of a successful import run.
+type ImportSuccess struct {
+	// Output is the output from terraform import
+	Output string
+	// RePlanCmd is the command that users should run to re-plan this project.
+	RePlanCmd string
+}
+
+// StateRmSuccess is the result of a successful state rm run.
+type StateRmSuccess struct {
+	// Output is the output from terraform state rm
+	Output string
+	// RePlanCmd is the command that users should run to re-plan this project.
+	RePlanCmd string
+}
+
+func (p *PolicyCheckResults) CombinedOutput() string {
+	combinedOutput := ""
+	for _, psResult := range p.PolicySetResults {
+		// accounting for json output from conftest.
+		for _, psResultLine := range strings.Split(psResult.ConftestOutput, "\\n") {
+			combinedOutput = fmt.Sprintf("%s\n%s", combinedOutput, psResultLine)
+		}
+	}
+	return combinedOutput
+}
+
+// Summary extracts one line summary of each policy check.
+func (p *PolicyCheckResults) Summary() string {
+	note := ""
+	for _, policySetResult := range p.PolicySetResults {
+		r := regexp.MustCompile(`\d+ tests?, \d+ passed, \d+ warnings?, \d+ failures?, \d+ exceptions?(, \d skipped)?`)
+		if match := r.FindString(policySetResult.ConftestOutput); match != "" {
+			note = fmt.Sprintf("%s\npolicy set: %s: %s", note, policySetResult.PolicySetName, match)
+		}
+	}
+	return strings.Trim(note, "\n")
+}
+
+// PolicyCleared is used to determine if policies have all succeeded or been approved.
+func (p *PolicyCheckResults) PolicyCleared() bool {
+	passing := true
+	for _, policySetResult := range p.PolicySetResults {
+		if !policySetResult.Passed && (policySetResult.CurApprovals != policySetResult.ReqApprovals) {
+			passing = false
+		}
+	}
+	return passing
+}
+
+// PolicySummary returns a summary of the current approval state of policy sets.
+func (p *PolicyCheckResults) PolicySummary() string {
+	var summary []string
+	for _, policySetResult := range p.PolicySetResults {
+		if policySetResult.Passed {
+			summary = append(summary, fmt.Sprintf("policy set: %s: passed.", policySetResult.PolicySetName))
+		} else if policySetResult.CurApprovals == policySetResult.ReqApprovals {
+			summary = append(summary, fmt.Sprintf("policy set: %s: approved.", policySetResult.PolicySetName))
+		} else {
+			summary = append(summary, fmt.Sprintf("policy set: %s: requires: %d approval(s), have: %d.", policySetResult.PolicySetName, policySetResult.ReqApprovals, policySetResult.CurApprovals))
+		}
+	}
+	return strings.Join(summary, "\n")
 }
 
 type VersionSuccess struct {
@@ -435,6 +537,8 @@ type ProjectStatus struct {
 	Workspace   string
 	RepoRelDir  string
 	ProjectName string
+	// PolicySetApprovals tracks the approval status of every PolicySet for a Project.
+	PolicyStatus []PolicySetStatus
 	// Status is the status of where this project is at in the planning cycle.
 	Status ProjectPlanStatus
 }
@@ -506,4 +610,11 @@ type WorkflowHookCommandContext struct {
 	User User
 	// Verbose is true when the user would like verbose output.
 	Verbose bool
+	// EscapedCommentArgs are the extra arguments that were added to the atlantis
+	// command, ex. atlantis plan -- -target=resource. We then escape them
+	// by adding a \ before each character so that they can be used within
+	// sh -c safely, i.e. sh -c "terraform plan $(touch bad)".
+	EscapedCommentArgs []string
+	// UUID for reference
+	HookID string
 }

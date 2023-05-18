@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
-	"github.com/google/go-github/v31/github"
+	"github.com/google/go-github/v52/github"
 	"github.com/pkg/errors"
 )
 
-//go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_github_credentials.go GithubCredentials
+//go:generate pegomock generate -m --package mocks -o mocks/mock_github_credentials.go GithubCredentials
 
 // GithubCredentials handles creating http.Clients that authenticate.
 type GithubCredentials interface {
@@ -108,7 +108,7 @@ func (c *GithubAppCredentials) GetUser() (string, error) {
 	}
 	// Currently there is no way to get the bot's login info, so this is a
 	// hack until Github exposes that.
-	return fmt.Sprintf("%s[bot]", app.GetName()), nil
+	return fmt.Sprintf("%s[bot]", app.GetSlug()), nil
 }
 
 // GetToken returns a fresh installation token.

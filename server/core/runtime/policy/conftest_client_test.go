@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/hashicorp/go-version"
@@ -18,6 +17,9 @@ import (
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 func TestConfTestVersionDownloader(t *testing.T) {
@@ -25,7 +27,7 @@ func TestConfTestVersionDownloader(t *testing.T) {
 	version, _ := version.NewVersion("0.25.0")
 	destPath := "some/path"
 
-	fullURL := fmt.Sprintf("https://github.com/open-policy-agent/conftest/releases/download/v0.25.0/conftest_0.25.0_%s_x86_64.tar.gz?checksum=file:https://github.com/open-policy-agent/conftest/releases/download/v0.25.0/checksums.txt", strings.Title(runtime.GOOS))
+	fullURL := fmt.Sprintf("https://github.com/open-policy-agent/conftest/releases/download/v0.25.0/conftest_0.25.0_%s_x86_64.tar.gz?checksum=file:https://github.com/open-policy-agent/conftest/releases/download/v0.25.0/checksums.txt", cases.Title(language.English).String(runtime.GOOS))
 
 	RegisterMockTestingT(t)
 
@@ -62,16 +64,30 @@ func TestEnsureExecutorVersion(t *testing.T) {
 	RegisterMockTestingT(t)
 
 	mockCache := mocks.NewMockExecutionVersionCache()
+	mockExec := models_mocks.NewMockExec()
 	log := logging.NewNoopLogger(t)
 
-	t.Run("no specified version or default version", func(t *testing.T) {
+	t.Run("no specified version or default version without conftest command", func(t *testing.T) {
 		subject := &ConfTestExecutorWorkflow{
 			VersionCache: mockCache,
+			Exec:         mockExec,
 		}
 
+		When(mockExec.LookPath(AnyString())).ThenReturn("", errors.New("not found"))
 		_, err := subject.EnsureExecutorVersion(log, nil)
 
 		Assert(t, err != nil, "expected error finding version")
+	})
+
+	t.Run("no specified version or default version with conftest command", func(t *testing.T) {
+		subject := &ConfTestExecutorWorkflow{
+			VersionCache: mockCache,
+			Exec:         mockExec,
+		}
+		When(mockExec.LookPath(AnyString())).ThenReturn(expectedPath, nil)
+		path, err := subject.EnsureExecutorVersion(log, nil)
+		Ok(t, err)
+		Assert(t, path == expectedPath, "path is expected")
 	})
 
 	t.Run("use default version", func(t *testing.T) {
@@ -145,7 +161,7 @@ func TestRun(t *testing.T) {
 	envs := map[string]string{
 		"key": "val",
 	}
-	workdir := "/some_workdir"
+	workdir := t.TempDir()
 
 	policySet1 := valid.PolicySet{
 		Source: valid.LocalPolicySet,
@@ -175,19 +191,22 @@ func TestRun(t *testing.T) {
 		var extraArgs []string
 
 		expectedOutput := "Success"
-		expectedResult := "Checking plan against the following policies: \n  policy1\n  policy2\nSuccess"
-		expectedArgs := []string{executablePath, "test", "-p", localPolicySetPath1, "-p", localPolicySetPath2, "/some_workdir/testproj-default.json", "--no-color"}
+		expectedResult := `[{"PolicySetName":"policy1","ConftestOutput":"Success","Passed":true,"ReqApprovals":0,"CurApprovals":0},{"PolicySetName":"policy2","ConftestOutput":"Success","Passed":true,"ReqApprovals":0,"CurApprovals":0}]`
+
+		expectedArgsPolicy1 := []string{executablePath, "test", "-p", localPolicySetPath1, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
+		expectedArgsPolicy2 := []string{executablePath, "test", "-p", localPolicySetPath2, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
 
 		When(mockResolver.Resolve(policySet1)).ThenReturn(localPolicySetPath1, nil)
 		When(mockResolver.Resolve(policySet2)).ThenReturn(localPolicySetPath2, nil)
 
-		When(mockExec.CombinedOutput(expectedArgs, envs, workdir)).ThenReturn(expectedOutput, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy1, envs, workdir)).ThenReturn(expectedOutput, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy2, envs, workdir)).ThenReturn(expectedOutput, nil)
 
 		result, err := subject.Run(ctx, executablePath, envs, workdir, extraArgs)
 
 		fmt.Println(result)
 
-		Ok(t, err)
+		Ok(t, errors.Unwrap(err))
 
 		Assert(t, result == expectedResult, "result is expected")
 
@@ -197,19 +216,22 @@ func TestRun(t *testing.T) {
 		extraArgs := []string{"--all-namespaces"}
 
 		expectedOutput := "Success"
-		expectedResult := "Checking plan against the following policies: \n  policy1\n  policy2\nSuccess"
-		expectedArgs := []string{executablePath, "test", "-p", localPolicySetPath1, "-p", localPolicySetPath2, "/some_workdir/testproj-default.json", "--no-color", "--all-namespaces"}
+		expectedResult := `[{"PolicySetName":"policy1","ConftestOutput":"","Passed":true,"ReqApprovals":0,"CurApprovals":0},{"PolicySetName":"policy2","ConftestOutput":"","Passed":true,"ReqApprovals":0,"CurApprovals":0}]`
+
+		expectedArgsPolicy1 := []string{executablePath, "test", "-p", localPolicySetPath1, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
+		expectedArgsPolicy2 := []string{executablePath, "test", "-p", localPolicySetPath2, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
 
 		When(mockResolver.Resolve(policySet1)).ThenReturn(localPolicySetPath1, nil)
 		When(mockResolver.Resolve(policySet2)).ThenReturn(localPolicySetPath2, nil)
 
-		When(mockExec.CombinedOutput(expectedArgs, envs, workdir)).ThenReturn(expectedOutput, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy1, envs, workdir)).ThenReturn(expectedOutput, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy2, envs, workdir)).ThenReturn(expectedOutput, nil)
 
 		result, err := subject.Run(ctx, executablePath, envs, workdir, extraArgs)
 
 		fmt.Println(result)
 
-		Ok(t, err)
+		Ok(t, errors.Unwrap(err))
 
 		Assert(t, result == expectedResult, "result is expected")
 
@@ -219,17 +241,20 @@ func TestRun(t *testing.T) {
 		var extraArgs []string
 
 		expectedOutput := "Success"
-		expectedResult := "Checking plan against the following policies: \n  policy1\nSuccess"
-		expectedArgs := []string{executablePath, "test", "-p", localPolicySetPath1, "/some_workdir/testproj-default.json", "--no-color"}
+		expectedResult := `[{"PolicySetName":"policy1","ConftestOutput":"Success","Passed":true,"ReqApprovals":0,"CurApprovals":0}]`
+
+		expectedArgsPolicy1 := []string{executablePath, "test", "-p", localPolicySetPath1, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
+		expectedArgsPolicy2 := []string{executablePath, "test", "-p", localPolicySetPath2, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
 
 		When(mockResolver.Resolve(policySet1)).ThenReturn(localPolicySetPath1, nil)
 		When(mockResolver.Resolve(policySet2)).ThenReturn("", errors.New("err"))
 
-		When(mockExec.CombinedOutput(expectedArgs, envs, workdir)).ThenReturn(expectedOutput, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy1, envs, workdir)).ThenReturn(expectedOutput, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy2, envs, workdir)).ThenReturn(expectedOutput, nil)
 
 		result, err := subject.Run(ctx, executablePath, envs, workdir, extraArgs)
 
-		Ok(t, err)
+		Ok(t, errors.Unwrap(err))
 
 		Assert(t, result == expectedResult, "result is expected")
 
@@ -238,13 +263,13 @@ func TestRun(t *testing.T) {
 	t.Run("error resolving both policy sources", func(t *testing.T) {
 		var extraArgs []string
 
-		expectedResult := "Success"
-		expectedArgs := []string{executablePath, "test", "-p", localPolicySetPath1, "/some_workdir/testproj-default.json", "--no-color"}
+		expectedResult := ""
+		expectedArgsPolicy1 := []string{executablePath, "test", "-p", localPolicySetPath1, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
 
 		When(mockResolver.Resolve(policySet1)).ThenReturn("", errors.New("err"))
 		When(mockResolver.Resolve(policySet2)).ThenReturn("", errors.New("err"))
 
-		When(mockExec.CombinedOutput(expectedArgs, envs, workdir)).ThenReturn(expectedResult, nil)
+		When(mockExec.CombinedOutput(expectedArgsPolicy1, envs, workdir)).ThenReturn(expectedResult, nil)
 
 		result, err := subject.Run(ctx, executablePath, envs, workdir, extraArgs)
 
@@ -254,21 +279,47 @@ func TestRun(t *testing.T) {
 
 	})
 
-	t.Run("error running cmd", func(t *testing.T) {
+	t.Run("error running one cmd", func(t *testing.T) {
 		var extraArgs []string
 
-		expectedOutput := "FAIL - /some_workdir/testproj-default.json - failure"
-		expectedResult := "Checking plan against the following policies: \n  policy1\n  policy2\nFAIL - <redacted plan file> - failure"
-		expectedArgs := []string{executablePath, "test", "-p", localPolicySetPath1, "-p", localPolicySetPath2, "/some_workdir/testproj-default.json", "--no-color"}
+		expectedOutputPolicy1 := fmt.Sprintf("FAIL - %s - failure\n1 tests, 0 passed, 0 warnings, 1 failure, 0 exceptions", filepath.Join(workdir, "testproj-default.json"))
+		expectedOutputPolicy2 := "Success"
+		expectedResult := `[{"PolicySetName":"policy1","ConftestOutput":"FAIL - <redacted plan file> - failure\n1 tests, 0 passed, 0 warnings, 1 failure, 0 exceptions","Passed":false,"ReqApprovals":0,"CurApprovals":0},{"PolicySetName":"policy2","ConftestOutput":"Success","Passed":true,"ReqApprovals":0,"CurApprovals":0}]`
+
+		expectedArgsPolicy1 := []string{executablePath, "test", "-p", localPolicySetPath1, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
+		expectedArgsPolicy2 := []string{executablePath, "test", "-p", localPolicySetPath2, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
 
 		When(mockResolver.Resolve(policySet1)).ThenReturn(localPolicySetPath1, nil)
 		When(mockResolver.Resolve(policySet2)).ThenReturn(localPolicySetPath2, nil)
 
-		When(mockExec.CombinedOutput(expectedArgs, envs, workdir)).ThenReturn(expectedOutput, errors.New("exit status code 1"))
+		When(mockExec.CombinedOutput(expectedArgsPolicy1, envs, workdir)).ThenReturn(expectedOutputPolicy1, errors.New("exit status code 1"))
+		When(mockExec.CombinedOutput(expectedArgsPolicy2, envs, workdir)).ThenReturn(expectedOutputPolicy2, nil)
 
 		result, err := subject.Run(ctx, executablePath, envs, workdir, extraArgs)
 
-		Assert(t, result == expectedResult, "rseult is expected")
+		Equals(t, result, expectedResult)
+		Assert(t, err != nil, "error is expected")
+
+	})
+
+	t.Run("error running both cmds", func(t *testing.T) {
+		var extraArgs []string
+
+		expectedOutput := fmt.Sprintf("FAIL - %s - failure\n1 tests, 0 passed, 0 warnings, 1 failure, 0 exceptions", filepath.Join(workdir, "testproj-default.json"))
+		expectedResult := `[{"PolicySetName":"policy1","ConftestOutput":"FAIL - <redacted plan file> - failure\n1 tests, 0 passed, 0 warnings, 1 failure, 0 exceptions","Passed":false,"ReqApprovals":0,"CurApprovals":0},{"PolicySetName":"policy2","ConftestOutput":"FAIL - <redacted plan file> - failure\n1 tests, 0 passed, 0 warnings, 1 failure, 0 exceptions","Passed":false,"ReqApprovals":0,"CurApprovals":0}]`
+
+		expectedArgsPolicy1 := []string{executablePath, "test", "-p", localPolicySetPath1, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
+		expectedArgsPolicy2 := []string{executablePath, "test", "-p", localPolicySetPath2, filepath.Join(workdir, "testproj-default.json"), "--no-color"}
+
+		When(mockResolver.Resolve(policySet1)).ThenReturn(localPolicySetPath1, nil)
+		When(mockResolver.Resolve(policySet2)).ThenReturn(localPolicySetPath2, nil)
+
+		When(mockExec.CombinedOutput(expectedArgsPolicy1, envs, workdir)).ThenReturn(expectedOutput, errors.New("exit status code 1"))
+		When(mockExec.CombinedOutput(expectedArgsPolicy2, envs, workdir)).ThenReturn(expectedOutput, errors.New("exit status code 1"))
+
+		result, err := subject.Run(ctx, executablePath, envs, workdir, extraArgs)
+
+		Equals(t, result, expectedResult)
 		Assert(t, err != nil, "error is expected")
 
 	})
