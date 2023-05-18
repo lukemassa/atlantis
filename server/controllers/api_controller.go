@@ -27,7 +27,7 @@ type APIController struct {
 	ProjectCommandBuilder     events.ProjectCommandBuilder
 	ProjectPlanCommandRunner  events.ProjectPlanCommandRunner
 	ProjectApplyCommandRunner events.ProjectApplyCommandRunner
-	RepoAllowlistChecker      *events.RepoAllowlistChecker
+	RepoMatchChecker          *events.RepoMatchChecker
 	Scope                     tally.Scope
 	VCSClient                 vcs.Client
 }
@@ -208,8 +208,8 @@ func (a *APIController) apiParseAndValidate(r *http.Request) (*APIRequest, *comm
 	}
 
 	// Check if the repo is allowlisted
-	if !a.RepoAllowlistChecker.IsAllowlisted(baseRepo.FullName, baseRepo.VCSHost.Hostname) {
-		return nil, nil, http.StatusForbidden, fmt.Errorf("repo not allowlisted")
+	if !a.RepoMatchChecker.Matches(baseRepo.FullName, baseRepo.VCSHost.Hostname) {
+		return nil, nil, http.StatusForbidden, fmt.Errorf("repo does not match allow and deny list")
 	}
 
 	return &request, &command.Context{

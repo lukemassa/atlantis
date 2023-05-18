@@ -1385,7 +1385,7 @@ func setupE2E(t *testing.T, repoDir string, opt setupOption) (events_controllers
 		PullStatusFetcher:              backend,
 	}
 
-	repoAllowlistChecker, err := events.NewRepoAllowlistChecker("*")
+	repoMatchChecker, err := events.NewRepoMatchChecker("*", "")
 	Ok(t, err)
 
 	ctrl := events_controllers.VCSEventsController{
@@ -1407,7 +1407,7 @@ func setupE2E(t *testing.T, repoDir string, opt setupOption) (events_controllers
 		GithubRequestValidator:       &events_controllers.DefaultGithubRequestValidator{},
 		GitlabRequestParserValidator: &events_controllers.DefaultGitlabRequestParserValidator{},
 		GitlabWebhookSecret:          nil,
-		RepoAllowlistChecker:         repoAllowlistChecker,
+		RepoMatchChecker:             repoMatchChecker,
 		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab, models.Github, models.BitbucketCloud},
 		VCSClient:                    e2eVCSClient,
 	}

@@ -798,7 +798,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		TeamAllowlistChecker:           githubTeamAllowlistChecker,
 		VarFileAllowlistChecker:        varFileAllowlistChecker,
 	}
-	repoAllowlist, err := events.NewRepoAllowlistChecker(userConfig.RepoAllowlist)
+	repoMatchChecker, err := events.NewRepoMatchChecker(userConfig.RepoAllowlist, userConfig.RepoDenyList)
 	if err != nil {
 		return nil, err
 	}
@@ -842,7 +842,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		ProjectCommandBuilder:     projectCommandBuilder,
 		ProjectPlanCommandRunner:  instrumentedProjectCmdRunner,
 		ProjectApplyCommandRunner: instrumentedProjectCmdRunner,
-		RepoAllowlistChecker:      repoAllowlist,
+		RepoMatchChecker:          repoMatchChecker,
 		Scope:                     statsScope.SubScope("api"),
 		VCSClient:                 vcsClient,
 	}
@@ -859,7 +859,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		GithubRequestValidator:          &events_controllers.DefaultGithubRequestValidator{},
 		GitlabRequestParserValidator:    &events_controllers.DefaultGitlabRequestParserValidator{},
 		GitlabWebhookSecret:             []byte(userConfig.GitlabWebhookSecret),
-		RepoAllowlistChecker:            repoAllowlist,
+		RepoMatchChecker:                repoMatchChecker,
 		SilenceAllowlistErrors:          userConfig.SilenceAllowlistErrors,
 		EmojiReaction:                   userConfig.EmojiReaction,
 		ExecutableName:                  userConfig.ExecutableName,

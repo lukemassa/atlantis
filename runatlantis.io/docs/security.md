@@ -48,6 +48,8 @@ For example:
 * Every repository in your GitHub Enterprise install: `--repo-allowlist=github.yourcompany.com/*`
 * All repositories: `--repo-allowlist=*`. Useful for when you're in a protected network but dangerous without also setting a webhook secret.
 
+You can also specify the `--repo-denylist` flag to exclude repos included by the allow list.
+
 This flag ensures your Atlantis install isn't being used with repositories you don't control. See `atlantis server --help` for more details.
 
 ### Protect Terraform Planning

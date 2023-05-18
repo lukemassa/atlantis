@@ -66,7 +66,7 @@ func setup(t *testing.T) (controllers.APIController, *MockProjectCommandBuilder,
 	scope, _, _ := metrics.NewLoggingScope(logger, "null")
 	parser := NewMockEventParsing()
 	vcsClient := NewMockClient()
-	repoAllowlistChecker, err := events.NewRepoAllowlistChecker("*")
+	repoMatchChecker, err := events.NewRepoMatchChecker("*", "")
 	Ok(t, err)
 
 	projectCommandBuilder := NewMockProjectCommandBuilder()
@@ -97,7 +97,7 @@ func setup(t *testing.T) (controllers.APIController, *MockProjectCommandBuilder,
 		ProjectPlanCommandRunner:  projectCommandRunner,
 		ProjectApplyCommandRunner: projectCommandRunner,
 		VCSClient:                 vcsClient,
-		RepoAllowlistChecker:      repoAllowlistChecker,
+		RepoMatchChecker:          repoMatchChecker,
 	}
 	return ac, projectCommandBuilder, projectCommandRunner
 }

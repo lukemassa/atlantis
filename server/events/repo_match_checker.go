@@ -21,39 +21,62 @@ import (
 // Wildcard matches 0-n of all characters except commas.
 const Wildcard = "*"
 
-// RepoAllowlistChecker implements checking if repos are allowlisted to be used with
+// RepoAllowlistChecker implements checking if repos are allowlisted and not denylisted to be used with
 // this Atlantis.
-type RepoAllowlistChecker struct {
-	rules []string
+type RepoMatchChecker struct {
+	allowRules []string
+	denyRules  []string
 }
 
 // NewRepoAllowlistChecker constructs a new checker and validates that the
 // allowlist isn't malformed.
-func NewRepoAllowlistChecker(allowlist string) (*RepoAllowlistChecker, error) {
-	rules := strings.Split(allowlist, ",")
+func NewRepoMatchChecker(allowlist, denylist string) (*RepoMatchChecker, error) {
+	allowRules, err := parseRulesFromList(allowlist)
+	if err != nil {
+		return nil, err
+	}
+	denyRules, err := parseRulesFromList(denylist)
+	if err != nil {
+		return nil, err
+	}
+	return &RepoMatchChecker{
+		allowRules: allowRules,
+		denyRules:  denyRules,
+	}, nil
+}
+
+func parseRulesFromList(list string) ([]string, error) {
+	rules := strings.Split(list, ",")
 	for _, rule := range rules {
 		if strings.Contains(rule, "://") {
 			return nil, fmt.Errorf("allowlist %q contained ://", rule)
 		}
 	}
-	return &RepoAllowlistChecker{
-		rules: rules,
-	}, nil
+	return rules, nil
+
 }
 
 // IsAllowlisted returns true if this repo is in our allowlist and false
 // otherwise.
-func (r *RepoAllowlistChecker) IsAllowlisted(repoFullName string, vcsHostname string) bool {
+func (r *RepoMatchChecker) Matches(repoFullName string, vcsHostname string) bool {
+	// Must match at least one rule in the allow list, and
 	candidate := fmt.Sprintf("%s/%s", vcsHostname, repoFullName)
-	for _, rule := range r.rules {
-		if r.matchesRule(rule, candidate) {
+	allowedByAllowList := matchesAtLeastOneRule(r.allowRules, candidate)
+	deniedByDenyList := matchesAtLeastOneRule(r.denyRules, candidate)
+
+	return allowedByAllowList && !deniedByDenyList
+}
+
+func matchesAtLeastOneRule(rules []string, candidate string) bool {
+	for _, rule := range rules {
+		if matchesRule(rule, candidate) {
 			return true
 		}
 	}
 	return false
 }
 
-func (r *RepoAllowlistChecker) matchesRule(rule string, candidate string) bool {
+func matchesRule(rule string, candidate string) bool {
 	// Case insensitive compare.
 	rule = strings.ToLower(rule)
 	candidate = strings.ToLower(candidate)

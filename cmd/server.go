@@ -109,6 +109,7 @@ const (
 	// RepoWhitelistFlag is deprecated for RepoAllowlistFlag.
 	RepoWhitelistFlag          = "repo-whitelist"
 	RepoAllowlistFlag          = "repo-allowlist"
+	RepoDenylistFlag           = "repo-denylist"
 	RequireApprovalFlag        = "require-approval"
 	RequireMergeableFlag       = "require-mergeable"
 	SilenceNoProjectsFlag      = "silence-no-projects"
@@ -349,6 +350,11 @@ var stringFlags = map[string]stringFlag{
 			"The format is {hostname}/{owner}/{repo}, ex. github.com/runatlantis/atlantis. '*' matches any characters until the next comma. Examples: " +
 			"all repos: '*' (not secure), an entire hostname: 'internalgithub.com/*' or an organization: 'github.com/runatlantis/*'." +
 			" For Bitbucket Server, {owner} is the name of the project (not the key).",
+	},
+	RepoDenylistFlag: {
+		description: "Comma separated list of repositories that Atlantis will skip. " +
+			"If a repo is matched by the allow list but also matched by the denylist, it will not be operated on. " +
+			"The format is the same as --repo-allowlist.",
 	},
 	RepoWhitelistFlag: {
 		description: "[Deprecated for --repo-allowlist].",
@@ -895,6 +901,9 @@ func (s *ServerCmd) validate(userConfig server.UserConfig) error {
 	}
 	if strings.Contains(userConfig.RepoAllowlist, "://") {
 		return fmt.Errorf("--%s cannot contain ://, should be hostnames only", RepoAllowlistFlag)
+	}
+	if strings.Contains(userConfig.RepoDenyList, "://") {
+		return fmt.Errorf("--%s cannot contain ://, should be hostnames only", RepoDenylistFlag)
 	}
 	if userConfig.SilenceAllowlistErrors && userConfig.SilenceWhitelistErrors {
 		return fmt.Errorf("both --%s and --%s cannot be set–use --%s", SilenceAllowlistErrorsFlag, SilenceWhitelistErrorsFlag, SilenceAllowlistErrorsFlag)

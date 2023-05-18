@@ -77,6 +77,7 @@ type UserConfig struct {
 	RepoConfig                      string `mapstructure:"repo-config"`
 	RepoConfigJSON                  string `mapstructure:"repo-config-json"`
 	RepoAllowlist                   string `mapstructure:"repo-allowlist"`
+	RepoDenyList                    string `mapstructure:"repo-denylist"`
 	// RepoWhitelist is deprecated in favour of RepoAllowlist.
 	RepoWhitelist string `mapstructure:"repo-whitelist"`
 

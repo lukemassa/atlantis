@@ -67,8 +67,8 @@ type VCSEventsController struct {
 	// GitlabWebhookSecret is the secret added to this webhook via the GitLab
 	// UI that identifies this call as coming from GitLab. If empty, no
 	// request validation is done.
-	GitlabWebhookSecret  []byte
-	RepoAllowlistChecker *events.RepoAllowlistChecker
+	GitlabWebhookSecret []byte
+	RepoMatchChecker    *events.RepoMatchChecker
 	// SilenceAllowlistErrors controls whether we write an error comment on
 	// pull requests from non-allowlisted repos.
 	SilenceAllowlistErrors bool
@@ -425,7 +425,7 @@ func (e *VCSEventsController) HandleGithubPullRequestEvent(logger logging.Simple
 }
 
 func (e *VCSEventsController) handlePullRequestEvent(logger logging.SimpleLogging, baseRepo models.Repo, headRepo models.Repo, pull models.PullRequest, user models.User, eventType models.PullRequestEventType) HTTPResponse {
-	if !e.RepoAllowlistChecker.IsAllowlisted(baseRepo.FullName, baseRepo.VCSHost.Hostname) {
+	if !e.RepoMatchChecker.Matches(baseRepo.FullName, baseRepo.VCSHost.Hostname) {
 		// If the repo isn't allowlisted and we receive an opened pull request
 		// event we comment back on the pull request that the repo isn't
 		// allowlisted. This is because the user might be expecting Atlantis to
@@ -550,7 +550,7 @@ func (e *VCSEventsController) handleCommentEvent(logger logging.SimpleLogging, b
 
 	// At this point we know it's a command we're not supposed to ignore, so now
 	// we check if this repo is allowed to run commands in the first place.
-	if !e.RepoAllowlistChecker.IsAllowlisted(baseRepo.FullName, baseRepo.VCSHost.Hostname) {
+	if !e.RepoMatchChecker.Matches(baseRepo.FullName, baseRepo.VCSHost.Hostname) {
 		e.commentNotAllowlisted(baseRepo, pullNum)
 
 		err := errors.New("Repo not allowlisted")

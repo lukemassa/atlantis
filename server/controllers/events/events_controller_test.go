@@ -205,7 +205,7 @@ func TestPost_GitlabCommentNotAllowlisted(t *testing.T) {
 		GitlabRequestParserValidator: &events_controllers.DefaultGitlabRequestParserValidator{},
 		Parser:                       &events.EventParser{},
 		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab},
-		RepoAllowlistChecker:         &events.RepoAllowlistChecker{},
+		RepoMatchChecker:             &events.RepoMatchChecker{},
 		VCSClient:                    vcsClient,
 	}
 	requestJSON, err := os.ReadFile(filepath.Join("testdata", "gitlabMergeCommentEvent_notAllowlisted.json"))
@@ -236,7 +236,7 @@ func TestPost_GitlabCommentNotAllowlistedWithSilenceErrors(t *testing.T) {
 		GitlabRequestParserValidator: &events_controllers.DefaultGitlabRequestParserValidator{},
 		Parser:                       &events.EventParser{},
 		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab},
-		RepoAllowlistChecker:         &events.RepoAllowlistChecker{},
+		RepoMatchChecker:             &events.RepoMatchChecker{},
 		VCSClient:                    vcsClient,
 		SilenceAllowlistErrors:       true,
 	}
@@ -268,7 +268,7 @@ func TestPost_GithubCommentNotAllowlisted(t *testing.T) {
 		CommentParser:          &events.CommentParser{ExecutableName: "atlantis"},
 		Parser:                 &events.EventParser{},
 		SupportedVCSHosts:      []models.VCSHostType{models.Github},
-		RepoAllowlistChecker:   &events.RepoAllowlistChecker{},
+		RepoMatchChecker:       &events.RepoMatchChecker{},
 		VCSClient:              vcsClient,
 	}
 	requestJSON, err := os.ReadFile(filepath.Join("testdata", "githubIssueCommentEvent_notAllowlisted.json"))
@@ -300,7 +300,7 @@ func TestPost_GithubCommentNotAllowlistedWithSilenceErrors(t *testing.T) {
 		CommentParser:          &events.CommentParser{ExecutableName: "atlantis"},
 		Parser:                 &events.EventParser{},
 		SupportedVCSHosts:      []models.VCSHostType{models.Github},
-		RepoAllowlistChecker:   &events.RepoAllowlistChecker{},
+		RepoMatchChecker:       &events.RepoMatchChecker{},
 		VCSClient:              vcsClient,
 		SilenceAllowlistErrors: true,
 	}
@@ -433,7 +433,7 @@ func TestPost_GithubPullRequestNotAllowlisted(t *testing.T) {
 	t.Log("when the event is a github pull request to a non-allowlisted repo we return a 400")
 	e, v, _, _, _, _, _, _, _ := setup(t)
 	var err error
-	e.RepoAllowlistChecker, err = events.NewRepoAllowlistChecker("github.com/nevermatch")
+	e.RepoMatchChecker, err = events.NewRepoMatchChecker("github.com/nevermatch", "")
 	Ok(t, err)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(githubHeader, "pull_request")
@@ -452,7 +452,7 @@ func TestPost_GitlabMergeRequestNotAllowlisted(t *testing.T) {
 	req.Header.Set(gitlabHeader, "value")
 
 	var err error
-	e.RepoAllowlistChecker, err = events.NewRepoAllowlistChecker("github.com/nevermatch")
+	e.RepoMatchChecker, err = events.NewRepoMatchChecker("github.com/nevermatch", "")
 	Ok(t, err)
 	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeEvent{}, nil)
 	repo := models.Repo{}
@@ -805,7 +805,7 @@ func TestPost_BBServerPullClosed(t *testing.T) {
 		t.Run(c.header, func(t *testing.T) {
 			RegisterMockTestingT(t)
 			pullCleaner := emocks.NewMockPullCleaner()
-			allowlist, err := events.NewRepoAllowlistChecker("*")
+			allowlist, err := events.NewRepoMatchChecker("*", "")
 			Ok(t, err)
 			logger := logging.NewNoopLogger(t)
 			scope, _, _ := metrics.NewLoggingScope(logger, "null")
@@ -816,11 +816,11 @@ func TestPost_BBServerPullClosed(t *testing.T) {
 					BitbucketToken:     "bb-token",
 					BitbucketServerURL: "https://bbserver.com",
 				},
-				RepoAllowlistChecker: allowlist,
-				SupportedVCSHosts:    []models.VCSHostType{models.BitbucketServer},
-				VCSClient:            nil,
-				Logger:               logger,
-				Scope:                scope,
+				RepoMatchChecker:  allowlist,
+				SupportedVCSHosts: []models.VCSHostType{models.BitbucketServer},
+				VCSClient:         nil,
+				Logger:            logger,
+				Scope:             scope,
 			}
 
 			// Build HTTP request.
@@ -937,7 +937,7 @@ func setup(t *testing.T) (events_controllers.VCSEventsController, *mocks.MockGit
 	cr := emocks.NewMockCommandRunner()
 	c := emocks.NewMockPullCleaner()
 	vcsmock := vcsmocks.NewMockClient()
-	repoAllowlistChecker, err := events.NewRepoAllowlistChecker("*")
+	RepoMatchChecker, err := events.NewRepoMatchChecker("*", "")
 	Ok(t, err)
 	logger := logging.NewNoopLogger(t)
 	scope, _, _ := metrics.NewLoggingScope(logger, "null")
@@ -960,7 +960,7 @@ func setup(t *testing.T) (events_controllers.VCSEventsController, *mocks.MockGit
 		SupportedVCSHosts:               []models.VCSHostType{models.Github, models.Gitlab, models.AzureDevops},
 		GitlabWebhookSecret:             secret,
 		GitlabRequestParserValidator:    gl,
-		RepoAllowlistChecker:            repoAllowlistChecker,
+		RepoMatchChecker:                RepoMatchChecker,
 		VCSClient:                       vcsmock,
 	}
 	return e, v, gl, ado, p, cr, c, vcsmock, cp

@@ -95,6 +95,7 @@ var testFlags = map[string]interface{}{
 	PortFlag:                         8181,
 	ParallelPoolSize:                 100,
 	RepoAllowlistFlag:                "github.com/runatlantis/atlantis",
+	RepoDenylistFlag:                 "",
 	RequireApprovalFlag:              true,
 	RequireMergeableFlag:             true,
 	SilenceNoProjectsFlag:            false,
@@ -272,6 +273,18 @@ func TestExecute_RepoAllowlistScheme(t *testing.T) {
 	err := c.Execute()
 	Assert(t, err != nil, "should be an error")
 	Equals(t, "--repo-allowlist cannot contain ://, should be hostnames only", err.Error())
+}
+
+// Should error if the repo denylist contained a scheme.
+func TestExecute_RepoDenylistScheme(t *testing.T) {
+	c := setup(map[string]interface{}{
+		GHUserFlag:       "user",
+		GHTokenFlag:      "token",
+		RepoDenylistFlag: "http://github.com/*",
+	}, t)
+	err := c.Execute()
+	Assert(t, err != nil, "should be an error")
+	Equals(t, "--repo-denylist cannot contain ://, should be hostnames only", err.Error())
 }
 
 func TestExecute_ValidateLogLevel(t *testing.T) {

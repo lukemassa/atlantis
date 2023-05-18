@@ -20,10 +20,11 @@ import (
 	. "github.com/runatlantis/atlantis/testing"
 )
 
-func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
+func TestRepoMatchChecker_Matches(t *testing.T) {
 	cases := []struct {
 		Description  string
 		Allowlist    string
+		Denylist     string
 		RepoFullName string
 		Hostname     string
 		Exp          bool
@@ -31,6 +32,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"exact match",
 			"github.com/owner/repo",
+			"",
 			"owner/repo",
 			"github.com",
 			true,
@@ -38,6 +40,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"exact match shouldn't match anything else",
 			"github.com/owner/repo",
+			"",
 			"owner/rep",
 			"github.com",
 			false,
@@ -45,6 +48,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"* should match anything",
 			"*",
+			"",
 			"owner/repo",
 			"github.com",
 			true,
@@ -52,6 +56,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com* should match anything github",
 			"github.com*",
+			"",
 			"owner/repo",
 			"github.com",
 			true,
@@ -59,6 +64,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com* should not match gitlab",
 			"github.com*",
+			"",
 			"owner/repo",
 			"gitlab.com",
 			false,
@@ -66,6 +72,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/o* should match",
 			"github.com/o*",
+			"",
 			"owner/repo",
 			"github.com",
 			true,
@@ -73,6 +80,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/owner/rep* should not match",
 			"github.com/owner/rep*",
+			"",
 			"owner/re",
 			"github.com",
 			false,
@@ -80,6 +88,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/owner/rep* should match",
 			"github.com/owner/rep*",
+			"",
 			"owner/rep",
 			"github.com",
 			true,
@@ -87,6 +96,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/o* should not match",
 			"github.com/o*",
+			"",
 			"somethingelse/repo",
 			"github.com",
 			false,
@@ -94,6 +104,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/owner/repo* should match exactly",
 			"github.com/owner/repo*",
+			"",
 			"owner/repo",
 			"github.com",
 			true,
@@ -101,6 +112,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/owner/* should match anything in org",
 			"github.com/owner/*",
+			"",
 			"owner/repo",
 			"github.com",
 			true,
@@ -108,6 +120,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"github.com/owner/* should not match anything not in org",
 			"github.com/owner/*",
+			"",
 			"otherorg/repo",
 			"github.com",
 			false,
@@ -115,6 +128,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"if there's any * it should match",
 			"github.com/owner/repo,*",
+			"",
 			"otherorg/repo",
 			"github.com",
 			true,
@@ -122,6 +136,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"any exact match should match",
 			"github.com/owner/repo,github.com/otherorg/repo",
+			"",
 			"otherorg/repo",
 			"github.com",
 			true,
@@ -129,6 +144,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"longer shouldn't match on exact",
 			"github.com/owner/repo",
+			"",
 			"owner/repo-longer",
 			"github.com",
 			false,
@@ -136,6 +152,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"should be case insensitive",
 			"github.com/owner/repo",
+			"",
 			"OwNeR/rEpO",
 			"github.com",
 			true,
@@ -143,6 +160,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"should be case insensitive for wildcards",
 			"github.com/owner/*",
+			"",
 			"OwNeR/rEpO",
 			"github.com",
 			true,
@@ -150,6 +168,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"should match if wildcard is not last character",
 			"github.com/owner/*-repo",
+			"",
 			"owner/prefix-repo",
 			"github.com",
 			true,
@@ -157,6 +176,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"should match if wildcard is first character within owner name",
 			"github.com/*-owner/repo",
+			"",
 			"prefix-owner/repo",
 			"github.com",
 			true,
@@ -164,6 +184,7 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"should match if wildcard is at beginning",
 			"*-owner/repo",
+			"",
 			"prefix-owner/repo",
 			"github.com",
 			true,
@@ -171,23 +192,48 @@ func TestRepoAllowlistChecker_IsAllowlisted(t *testing.T) {
 		{
 			"should match with duplicate",
 			"*runatlantis",
+			"",
 			"runatlantis/runatlantis",
 			"github.com",
 			true,
+		},
+		{
+			"should not match if in denylist",
+			"*",
+			"github.com/runatlantis/runatlantis",
+			"runatlantis/runatlantis",
+			"github.com",
+			false,
+		},
+		{
+			"should match if not in denylist",
+			"*",
+			"foobar",
+			"runatlantis/runatlantis",
+			"github.com",
+			true,
+		},
+		{
+			"should not match with wildcard in denylist",
+			"*",
+			"*",
+			"runatlantis/runatlantis",
+			"github.com",
+			false,
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.Description, func(t *testing.T) {
-			w, err := events.NewRepoAllowlistChecker(c.Allowlist)
+			w, err := events.NewRepoMatchChecker(c.Allowlist, c.Denylist)
 			Ok(t, err)
-			Equals(t, c.Exp, w.IsAllowlisted(c.RepoFullName, c.Hostname))
+			Equals(t, c.Exp, w.Matches(c.RepoFullName, c.Hostname))
 		})
 	}
 }
 
 // If the allowlist contains a schema then we should get an error.
-func TestRepoAllowlistChecker_ContainsSchema(t *testing.T) {
+func TestRepoMatchChecker_ContainsSchema(t *testing.T) {
 	cases := []struct {
 		allowlist string
 		expErr    string
@@ -204,7 +250,7 @@ func TestRepoAllowlistChecker_ContainsSchema(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.allowlist, func(t *testing.T) {
-			_, err := events.NewRepoAllowlistChecker(c.allowlist)
+			_, err := events.NewRepoMatchChecker(c.allowlist, "")
 			ErrEquals(t, c.expErr, err)
 		})
 	}

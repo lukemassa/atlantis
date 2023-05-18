@@ -802,6 +802,27 @@ This is useful when you have many projects and want to keep the pull request cle
   * Allowlist all repositories
     * `--repo-allowlist='*'`
 
+
+### `--repo-denylist`
+  ```bash
+  # NOTE: Use single quotes to avoid shell expansion of *.
+  atlantis server --repo-denylist='github.com/myorg/*'
+  # or
+  ATLANTIS_REPO_DENYLIST='github.com/myorg/*'
+  ```
+  Atlantis allows you to specify an denylist in addition to the required allowlist, which it will ignore webhooks from
+
+  Notes:
+  * Format is identical to `--repo-allowlist`, see above.
+  * While allowlist is required, denylist is optional
+  * If a repo matches both allowlist *and* denylist, it will be *denied*.
+
+  Examples:
+  * Allow all of `myorg/*` except `myorg/badrepo1` and `myorg/badrepo2` on `github.com`
+    * `--repo-allowlist='github.com/myorg/*' --repo-denylist='github.com/myorg/badrepo1,github.com/myorg/badrepo2'`
+  * Allow all servers except github
+    * `--repo-allowlist='*' --repo-denylist='github.com/*'`
+
 ### `--silence-fork-pr-errors`
   ```bash
   atlantis server --silence-fork-pr-errors
