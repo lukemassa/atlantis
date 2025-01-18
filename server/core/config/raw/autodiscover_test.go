@@ -10,6 +10,7 @@ import (
 
 func TestAutoDiscover_UnmarshalYAML(t *testing.T) {
 	autoDiscoverEnabled := valid.AutoDiscoverEnabledMode
+	ignoreString := "foobar"
 	cases := []struct {
 		description string
 		input       string
@@ -19,16 +20,19 @@ func TestAutoDiscover_UnmarshalYAML(t *testing.T) {
 			description: "omit unset fields",
 			input:       "",
 			exp: raw.AutoDiscover{
-				Mode: nil,
+				Mode:   nil,
+				Ignore: nil,
 			},
 		},
 		{
 			description: "all fields set",
 			input: `
 mode: enabled
+ignore: foobar
 `,
 			exp: raw.AutoDiscover{
-				Mode: &autoDiscoverEnabled,
+				Mode:   &autoDiscoverEnabled,
+				Ignore: &ignoreString,
 			},
 		},
 	}

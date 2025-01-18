@@ -316,7 +316,9 @@ func TestConfig_AutoDiscoverEnabled(t *testing.T) {
 				AutoDiscover: nil,
 			}
 			if c.repoAutoDiscover != "" {
-				r.AutoDiscover = &valid.AutoDiscover{c.repoAutoDiscover}
+				r.AutoDiscover = &valid.AutoDiscover{
+					Mode: c.repoAutoDiscover,
+				}
 			}
 			enabled := r.AutoDiscoverEnabled(c.defaultAutoDiscover)
 			Equals(t, c.expEnabled, enabled)
