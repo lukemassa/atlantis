@@ -201,7 +201,11 @@ func (r Repo) Validate() error {
 		withoutSlashes := branch[1 : len(branch)-1]
 		_, err := regexp.Compile(withoutSlashes)
 		if err != nil {
+<<<<<<< HEAD
 			return fmt.Errorf("parsing: %s: %w", branch, err)
+=======
+			return fmt.Errorf("parsing: %s: %v", branch, err)
+>>>>>>> 2c114ce8 (chore: Remove some references to pkg/errors)
 		}
 		return nil
 	}
